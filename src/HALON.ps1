@@ -18,6 +18,8 @@ $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\reconstructors\Halon.IdentitySessionReconstructor.ps1"
 . "$PSScriptRoot\reconstructors\Halon.WindowsSessionReconstructor.ps1"
 
+. "$PSScriptRoot\correlators\Halon.ProcessLogonCorrelator.ps1"
+
 . "$PSScriptRoot\instrumentation\Halon.Performance.ps1"
 
 . "$PSScriptRoot\exporters\Halon.JsonExporter.ps1"
@@ -819,88 +821,39 @@ Write-HalonJsonArray `
 # ---------------------------------------------
 # PROCESS / LOGON CONTEXT CORRELATION
 # ---------------------------------------------
+
+# ---------------------------------------------
+# BUILD LOGON INDEX
+# ---------------------------------------------
+
 $StageTimer = Start-HalonStageTimer
-Write-Host "Correlating processes with logon contexts..."
 
-$ProcessLogonContexts = @()
+$LogonIndex = New-HalonLogonIndex `
+    -IdentityEvents $IdentityEvents
 
-
-foreach ($Process in $ProcessCreationEvents) {
-
-    $MatchingLogon = $IdentityEvents |
-        Where-Object {
-
-            $_.Action -eq "Logon" -and
-            $_.LogonId -eq $Process.SubjectLogonId -and
-            [datetime]$_.TimeCreated -le [datetime]$Process.TimeCreated
-
-        } |
-        Sort-Object TimeCreated -Descending |
-        Select-Object -First 1
+Complete-HalonStageTimer `
+    -Stage "Correlation.LogonIndexBuild" `
+    -Stopwatch $StageTimer `
+    -Metrics $PerformanceMetrics `
+    -ItemCount $LogonIndex.Count
 
 
-    if ($null -ne $MatchingLogon) {
+# ---------------------------------------------
+# PROCESS / LOGON CORRELATION
+# ---------------------------------------------
 
-        $LogonContextFound = $true
+$StageTimer = Start-HalonStageTimer
 
-        $LogonIdentity = $MatchingLogon.Identity
-        $LogonUserSid  = $MatchingLogon.UserSid
-        $LogonType     = $MatchingLogon.LogonType
-        $LogonTime     = $MatchingLogon.TimeCreated
-        $LogonRecordId = $MatchingLogon.RecordId
-    }
-    else {
-
-        $LogonContextFound = $false
-
-        $LogonIdentity = $null
-        $LogonUserSid  = $null
-        $LogonType     = $null
-        $LogonTime     = $null
-        $LogonRecordId = $null
-    }
-
-
-    $ProcessLogonContexts += [PSCustomObject]@{
-
-        ProcessTime = $Process.TimeCreated
-
-        ProcessId = $Process.ProcessIdDecimal
-        ProcessIdRaw = $Process.ProcessIdRaw
-        ProcessName = $Process.ProcessName
-
-        ParentProcessId = $Process.ParentProcessIdDecimal
-        ParentProcessName = $Process.ParentProcessName
-
-        SubjectIdentity = $Process.SubjectIdentity
-        SubjectUserSid = $Process.SubjectUserSid
-        SubjectLogonId = $Process.SubjectLogonId
-
-        LogonContextFound = $LogonContextFound
-
-        LogonIdentity = $LogonIdentity
-        LogonUserSid = $LogonUserSid
-        LogonType = $LogonType
-        LogonTime = $LogonTime
-
-        ProcessSecurityRecordId = $Process.SecurityRecordId
-        LogonSecurityRecordId = $LogonRecordId
-
-        EvidenceBasis = if ($LogonContextFound) {
-            "SecurityLogonIdMatch"
-        }
-        else {
-            "NoMatchingSecurityLogon"
-        }
-    }
-}
+$ProcessLogonContexts = `
+    Get-HalonProcessLogonCorrelations `
+        -ProcessCreationEvents $ProcessCreationEvents `
+        -LogonIndex $LogonIndex
 
 Complete-HalonStageTimer `
     -Stage "Correlation.ProcessToLogon" `
     -Stopwatch $StageTimer `
     -Metrics $PerformanceMetrics `
     -ItemCount @($ProcessLogonContexts).Count
-
 # ---------------------------------------------
 # WRITE PROCESS / LOGON CONTEXT
 # ---------------------------------------------
