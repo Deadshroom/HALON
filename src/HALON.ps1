@@ -5,6 +5,7 @@ $ErrorActionPreference = "Stop"
 # ---------------------------------------------
 
 . "$PSScriptRoot\core\Halon.Common.ps1"
+. "$PSScriptRoot\collectors\Halon.HostCollector.ps1"
 
 # ---------------------------------------------
 # HALON
@@ -98,74 +99,32 @@ Write-Host "Host:             $ComputerName"
 Write-Host "Collection Start: $StartTime"
 Write-Host "Administrator:    $(Test-IsAdministrator)"
 Write-Host ""
-Write-Host "Collecting system information..."
+
 # ---------------------------------------------
 # SYSTEM INFORMATION
 # ---------------------------------------------
-$OS = Get-CimInstance Win32_OperatingSystem
-$Computer = Get-CimInstance Win32_ComputerSystem
-$CPU = Get-CimInstance Win32_Processor
-$SystemInfo = [PSCustomObject]@{
-    ComputerName = $ComputerName
-    Manufacturer = $Computer.Manufacturer
-    Model        = $Computer.Model
-    OS           = $OS.Caption
-    OSVersion    = $OS.Version
-    OSBuild      = $OS.BuildNumber
-    LastBootTime = $OS.LastBootUpTime
-    CPU          = $CPU.Name
-    RAMGB        = [math]::Round(
-        $Computer.TotalPhysicalMemory / 1GB,
-        2
-    )
-    Administrator = Test-IsAdministrator
-}
+$SystemInfo = Get-HalonSystemInformation ` -ComputerName $ComputerName
 $SystemInfo |
     ConvertTo-Json -Depth 4 |
     Set-Content `
         (Join-Path $RunDirectory "system-info.json") `
         -Encoding UTF8
+
 # ---------------------------------------------
 # DISK INFORMATION
 # ---------------------------------------------
 
-Write-Host "Collecting disk information..."
-
-$Disks = Get-CimInstance Win32_LogicalDisk |
-    Select-Object `
-        DeviceID,
-        VolumeName,
-        FileSystem,
-        DriveType,
-        @{
-            Name = "SizeGB"
-            Expression = {
-                [math]::Round($_.Size / 1GB, 2)
-            }
-        },
-        @{
-            Name = "FreeGB"
-            Expression = {
-                [math]::Round($_.FreeSpace / 1GB, 2)
-            }
-        }
-
+$Disks = Get-HalonDiskInformation
 $Disks |
     ConvertTo-Json -Depth 4 |
     Set-Content `
         (Join-Path $RunDirectory "disks.json") `
         -Encoding UTF8
 
-
 # ---------------------------------------------
 # SERVICES
 # ---------------------------------------------
-
-Write-Host "Collecting service information..."
-
-$Services = Get-Service |
-    Select-Object Name, DisplayName, Status, StartType
-
+$Services = Get-HalonServiceInformation
 $Services |
     ConvertTo-Json -Depth 4 |
     Set-Content `
