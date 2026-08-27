@@ -1,0 +1,25 @@
+# HALON generated evidence
+output/
+
+# Windows diagnostic artifacts
+*.evtx
+*.dmp
+*.mdmp
+*.etl
+
+# Logs
+*.log
+
+# Environment / secrets
+.env
+.env.*
+*.key
+*.pem
+
+# Windows filesystem noise
+Thumbs.db
+Desktop.ini
+
+# Editor / temporary files
+*.tmp
+*.bak
