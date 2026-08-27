@@ -9,9 +9,11 @@ $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\collectors\Halon.HostCollector.ps1"
 . "$PSScriptRoot\collectors\Halon.EventCollector.ps1"
 . "$PSScriptRoot\collectors\Halon.IdentityCollector.ps1"
+. "$PSScriptRoot\collectors\Halon.SessionCollector.ps1"
 
 . "$PSScriptRoot\normalizers\Halon.EventNormalizer.ps1"
 . "$PSScriptRoot\normalizers\Halon.IdentityNormalizer.ps1"
+. "$PSScriptRoot\normalizers\Halon.SessionNormalizer.ps1"
 
 . "$PSScriptRoot\exporters\Halon.JsonExporter.ps1"
 
@@ -677,68 +679,8 @@ Write-HalonJsonArray `
 # CURRENT WINDOWS SESSION SNAPSHOT
 # ---------------------------------------------
 
-Write-Host "Collecting current Windows session snapshot..."
-
-$CurrentSessions = @()
-
-try {
-
-    $QuserOutput = quser 2>$null
-
-    if ($LASTEXITCODE -eq 0 -and $QuserOutput) {
-
-        $SessionLines = $QuserOutput | Select-Object -Skip 1
-
-        foreach ($Line in $SessionLines) {
-
-            $CleanLine = $Line.TrimStart(">").Trim()
-
-            $Parts = $CleanLine -split '\s{2,}'
-
-            if ($Parts.Count -ge 4) {
-
-                $UserName = $Parts[0]
-
-                $SessionName = $null
-                $SessionId   = $null
-                $State       = $null
-                $IdleTime    = $null
-                $LogonTime   = $null
-
-                if ($Parts.Count -ge 6) {
-
-                    $SessionName = $Parts[1]
-                    $SessionId   = $Parts[2]
-                    $State       = $Parts[3]
-                    $IdleTime    = $Parts[4]
-                    $LogonTime   = $Parts[5]
-
-                }
-                elseif ($Parts.Count -eq 5) {
-
-                    $SessionId = $Parts[1]
-                    $State     = $Parts[2]
-                    $IdleTime  = $Parts[3]
-                    $LogonTime = $Parts[4]
-                }
-
-                $CurrentSessions += [PSCustomObject]@{
-                    UserName    = $UserName
-                    SessionName = $SessionName
-                    SessionId   = $SessionId
-                    State       = $State
-                    IdleTime    = $IdleTime
-                    LogonTime   = $LogonTime
-                }
-            }
-        }
-    }
-}
-catch {
-
-    Write-Warning "HALON could not collect current Windows session snapshot."
-}
-
+$CurrentSessions = `
+    Get-HalonCurrentSessionSnapshot
 
 # ---------------------------------------------
 # WRITE CURRENT SESSION SNAPSHOT
@@ -753,118 +695,30 @@ Write-HalonJsonArray `
 # WINDOWS SESSION LIFECYCLE EVIDENCE
 # ---------------------------------------------
 
-Write-Host "Collecting Windows session lifecycle evidence..."
-
-$WindowsSessionEventsRaw = @()
-
-$WindowsSessionCollectionStatus = "Available"
-$WindowsSessionCollectionError  = $null
-
-$WindowsSessionLogName = `
-    "Microsoft-Windows-TerminalServices-LocalSessionManager/Operational"
+$WindowsSessionCollection = `
+    Get-HalonWindowsSessionEvidence `
+        -StartTime $StartTime
 
 
-try {
+$WindowsSessionEventsRaw = @(
+    $WindowsSessionCollection.Events
+)
 
-    $WindowsSessionEventsRaw = Get-WinEvent `
-        -FilterHashtable @{
-            LogName   = $WindowsSessionLogName
-            StartTime = $StartTime
-            Id        = @(
-                21,   # Session logon
-                23,   # Session logoff
-                24,   # Session disconnected
-                25    # Session reconnected
-            )
-        } `
-        -ErrorAction Stop
 
-}
-catch {
+$WindowsSessionCollectionStatus = `
+    $WindowsSessionCollection.Status
 
-    $ErrorMessage = $_.Exception.Message
 
-    if (
-        $ErrorMessage -like
-        "*No events were found that match the specified selection criteria*"
-    ) {
-
-        $WindowsSessionCollectionStatus = `
-            "AvailableNoMatchingEvents"
-
-        $WindowsSessionCollectionError = $null
-
-        Write-Host `
-            "No Windows session lifecycle events found in collection window."
-    }
-    else {
-
-        $WindowsSessionCollectionStatus = "Unavailable"
-        $WindowsSessionCollectionError  = $ErrorMessage
-
-        Write-Warning `
-            "HALON could not collect Windows session lifecycle evidence."
-    }
-}
+$WindowsSessionCollectionError = `
+    $WindowsSessionCollection.Error
 
 # ---------------------------------------------
 # NORMALIZE WINDOWS SESSION LIFECYCLE EVENTS
 # ---------------------------------------------
 
-$WindowsSessionEvents = $WindowsSessionEventsRaw |
-    Sort-Object TimeCreated |
-    ForEach-Object {
-
-        $EventData = Get-HalonEventData -Event $_
-        $UserData  = Get-HalonUserData -Event $_
-        $SessionUser    = $UserData["User"]
-        $SessionId      = $UserData["SessionID"]
-        $SourceAddress  = $UserData["Address"]
-        switch ($_.Id) {
-
-            21 {
-                $SessionAction = "SessionLogon"
-            }
-
-            23 {
-                $SessionAction = "SessionLogoff"
-            }
-
-            24 {
-                $SessionAction = "SessionDisconnect"
-            }
-
-            25 {
-                $SessionAction = "SessionReconnect"
-            }
-
-            default {
-                $SessionAction = "Unknown"
-            }
-        }
-
-
-        [PSCustomObject]@{
-
-            TimeCreated = $_.TimeCreated
-
-            EventID = $_.Id
-
-            Action = $SessionAction
-
-            Provider = $_.ProviderName
-
-            RecordId = $_.RecordId
-
-            Message = $_.Message
-
-            EventData = $EventData
-            UserData  = $UserData
-            User          = $SessionUser
-            SessionId     = $SessionId
-            SourceAddress = $SourceAddress 
-        }
-    }
+$WindowsSessionEvents = `
+    ConvertTo-HalonWindowsSessionEvidence `
+        -RawEvents $WindowsSessionEventsRaw
 
 # ---------------------------------------------
 # WRITE WINDOWS SESSION LIFECYCLE EVIDENCE
