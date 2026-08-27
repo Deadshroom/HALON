@@ -18,6 +18,8 @@ $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\reconstructors\Halon.IdentitySessionReconstructor.ps1"
 . "$PSScriptRoot\reconstructors\Halon.WindowsSessionReconstructor.ps1"
 
+. "$PSScriptRoot\instrumentation\Halon.Performance.ps1"
+
 . "$PSScriptRoot\exporters\Halon.JsonExporter.ps1"
 
 # ---------------------------------------------
@@ -41,6 +43,15 @@ New-Item `
     -Path $RunDirectory `
     -Force | Out-Null
 
+# ---------------------------------------------
+# PERFORMANCE INSTRUMENTATION
+# ---------------------------------------------
+
+$HalonRunStopwatch = `
+    [System.Diagnostics.Stopwatch]::StartNew()
+
+$PerformanceMetrics = `
+    [System.Collections.Generic.List[object]]::new()
 
 # ---------------------------------------------
 # PROCESS CREATION AUDIT CAPABILITY
@@ -116,7 +127,8 @@ Write-Host ""
 # ---------------------------------------------
 # SYSTEM INFORMATION
 # ---------------------------------------------
-$SystemInfo = Get-HalonSystemInformation ` -ComputerName $ComputerName
+$SystemInfo = Get-HalonSystemInformation `
+    -ComputerName $ComputerName
 $SystemInfo |
     ConvertTo-Json -Depth 4 |
     Set-Content `
@@ -145,34 +157,61 @@ Write-HalonJsonArray `
 # ---------------------------------------------
 # WINDOWS EVENT LOGS
 # ---------------------------------------------
-$RawEvents = Get-HalonWindowsEventEvidence ` -StartTime $StartTime
+$StageTimer = Start-HalonStageTimer
+
+$RawEvents = Get-HalonWindowsEventEvidence `
+    -StartTime $StartTime
+
+Complete-HalonStageTimer `
+    -Stage "Event.Collection" `
+    -Stopwatch $StageTimer `
+    -Metrics $PerformanceMetrics `
+    -ItemCount @($RawEvents).Count
 
 # Normalize Windows events into HALON's internal structure.
 
-$Events = ConvertTo-HalonEventEvidence ` -RawEvents $RawEvents
+$StageTimer = Start-HalonStageTimer
 
-$Events |
-    ConvertTo-Json -Depth 5 |
-    Set-Content `
-        (Join-Path $RunDirectory "events.json") `
-        -Encoding UTF8
+$Events = ConvertTo-HalonEventEvidence `
+    -RawEvents $RawEvents
+
+Complete-HalonStageTimer `
+    -Stage "Event.Normalization" `
+    -Stopwatch $StageTimer `
+    -Metrics $PerformanceMetrics `
+    -ItemCount @($Events).Count
+
+Write-HalonJsonArray `
+    -InputObject $Events `
+    -Path (Join-Path $RunDirectory "events.json") `
+    -Depth 5
 
 # ---------------------------------------------
 # IDENTITY / SESSION EVIDENCE
 # ---------------------------------------------
+$StageTimer = Start-HalonStageTimer
 
-$IdentityCollection = Get-HalonIdentityEvidence ` -StartTime $StartTime
+$IdentityCollection = Get-HalonIdentityEvidence `
+    -StartTime $StartTime
+
+Complete-HalonStageTimer `
+    -Stage "Identity.Collection" `
+    -Stopwatch $StageTimer `
+    -Metrics $PerformanceMetrics `
+    -ItemCount @($IdentityCollection.Events).Count
 
 $IdentityEventsRaw = @($IdentityCollection.Events)
 
-$IdentityCollectionStatus = ` $IdentityCollection.Status
+$IdentityCollectionStatus = `
+    $IdentityCollection.Status
 
-$IdentityCollectionError = ` $IdentityCollection.Error
+$IdentityCollectionError = `
+    $IdentityCollection.Error
 
 # ---------------------------------------------
 # PROCESS CREATION EVIDENCE
 # ---------------------------------------------
-
+$StageTimer = Start-HalonStageTimer
 Write-Host "Checking historical process creation evidence..."
 
 $ProcessCreationEventsRaw = @()
@@ -236,10 +275,16 @@ catch {
     }
 }
 
+Complete-HalonStageTimer `
+    -Stage "Process.Collection" `
+    -Stopwatch $StageTimer `
+    -Metrics $PerformanceMetrics `
+    -ItemCount @($ProcessCreationEventsRaw).Count
+
 # ---------------------------------------------
 # NORMALIZE PROCESS CREATION EVIDENCE
 # ---------------------------------------------
-
+$StageTimer = Start-HalonStageTimer
 Write-Host "Normalizing historical process creation evidence..."
 
 $ProcessCreationEvents = $ProcessCreationEventsRaw |
@@ -249,9 +294,9 @@ $ProcessCreationEvents = $ProcessCreationEventsRaw |
         $EventData = Get-HalonEventData -Event $_
 
 
-        # -------------------------------------
-        # SUBJECT / CREATOR IDENTITY
-        # -------------------------------------
+# -------------------------------------
+# SUBJECT / CREATOR IDENTITY
+# -------------------------------------
 
         $SubjectUserSid = `
             $EventData["SubjectUserSid"]
@@ -410,6 +455,12 @@ $ProcessCreationEvents = $ProcessCreationEventsRaw |
         }
     }
 
+Complete-HalonStageTimer `
+    -Stage "Process.Normalization" `
+    -Stopwatch $StageTimer `
+    -Metrics $PerformanceMetrics `
+    -ItemCount @($ProcessCreationEvents).Count
+
 # ---------------------------------------------
 # WRITE PROCESS CREATION EVIDENCE
 # ---------------------------------------------
@@ -529,15 +580,32 @@ $ProcessEvidenceCapability |
 # NORMALIZE IDENTITY EVENTS
 # ---------------------------------------------
 
-$IdentityEvents = ConvertTo-HalonIdentityEvidence ` -RawEvents $IdentityEventsRaw
+$StageTimer = Start-HalonStageTimer
+
+$IdentityEvents = ConvertTo-HalonIdentityEvidence `
+    -RawEvents $IdentityEventsRaw
+
+Complete-HalonStageTimer `
+    -Stage "Identity.Normalization" `
+    -Stopwatch $StageTimer `
+    -Metrics $PerformanceMetrics `
+    -ItemCount @($IdentityEvents).Count
 
 # ---------------------------------------------
 # RECONSTRUCT INTERACTIVE USER SESSIONS
 # ---------------------------------------------
 
+$StageTimer = Start-HalonStageTimer
+
 $IdentitySessions = `
     Get-HalonIdentitySessions `
         -IdentityEvents $IdentityEvents
+
+Complete-HalonStageTimer `
+    -Stage "Identity.Reconstruction" `
+    -Stopwatch $StageTimer `
+    -Metrics $PerformanceMetrics `
+    -ItemCount @($IdentitySessions).Count
 
 # ---------------------------------------------
 # WRITE RECONSTRUCTED IDENTITY SESSIONS
@@ -610,11 +678,16 @@ Write-HalonJsonArray `
 # ---------------------------------------------
 # WINDOWS SESSION LIFECYCLE EVIDENCE
 # ---------------------------------------------
+$StageTimer = Start-HalonStageTimer
 
 $WindowsSessionCollection = `
     Get-HalonWindowsSessionEvidence `
         -StartTime $StartTime
-
+Complete-HalonStageTimer `
+    -Stage "Session.Collection" `
+    -Stopwatch $StageTimer `
+    -Metrics $PerformanceMetrics `
+    -ItemCount @($WindowsSessionCollection.Events).Count
 
 $WindowsSessionEventsRaw = @(
     $WindowsSessionCollection.Events
@@ -631,28 +704,44 @@ $WindowsSessionCollectionError = `
 # ---------------------------------------------
 # NORMALIZE WINDOWS SESSION LIFECYCLE EVENTS
 # ---------------------------------------------
+$StageTimer = Start-HalonStageTimer
 
 $WindowsSessionEvents = `
     ConvertTo-HalonWindowsSessionEvidence `
         -RawEvents $WindowsSessionEventsRaw
 
+Complete-HalonStageTimer `
+    -Stage "Session.Normalization" `
+    -Stopwatch $StageTimer `
+    -Metrics $PerformanceMetrics `
+    -ItemCount @($WindowsSessionEvents).Count
 # ---------------------------------------------
 # WRITE WINDOWS SESSION LIFECYCLE EVIDENCE
 # ---------------------------------------------
 
-$WindowsSessionEvents |
-    ConvertTo-Json -Depth 8 |
-    Set-Content `
-        (Join-Path $RunDirectory "windows-session-events.json") `
-        -Encoding UTF8
+Write-HalonJsonArray `
+    -InputObject $WindowsSessionEvents `
+    -Path (
+        Join-Path `
+            $RunDirectory `
+            "windows-session-events.json"
+    ) `
+    -Depth 8
 
 # ---------------------------------------------
 # RECONSTRUCT WINDOWS SESSIONS
 # ---------------------------------------------
+$StageTimer = Start-HalonStageTimer
 
 $WindowsSessions = `
     Get-HalonWindowsSessions `
         -WindowsSessionEvents $WindowsSessionEvents
+
+Complete-HalonStageTimer `
+    -Stage "Session.Reconstruction" `
+    -Stopwatch $StageTimer `
+    -Metrics $PerformanceMetrics `
+    -ItemCount @($WindowsSessions).Count
 
 # ---------------------------------------------
 # WRITE RECONSTRUCTED WINDOWS SESSIONS
@@ -730,7 +819,7 @@ Write-HalonJsonArray `
 # ---------------------------------------------
 # PROCESS / LOGON CONTEXT CORRELATION
 # ---------------------------------------------
-
+$StageTimer = Start-HalonStageTimer
 Write-Host "Correlating processes with logon contexts..."
 
 $ProcessLogonContexts = @()
@@ -806,6 +895,12 @@ foreach ($Process in $ProcessCreationEvents) {
     }
 }
 
+Complete-HalonStageTimer `
+    -Stage "Correlation.ProcessToLogon" `
+    -Stopwatch $StageTimer `
+    -Metrics $PerformanceMetrics `
+    -ItemCount @($ProcessLogonContexts).Count
+
 # ---------------------------------------------
 # WRITE PROCESS / LOGON CONTEXT
 # ---------------------------------------------
@@ -868,7 +963,7 @@ Write-HalonJsonArray `
 # ---------------------------------------------
 # EVENT PROCESS REFERENCES
 # ---------------------------------------------
-
+$StageTimer = Start-HalonStageTimer
 Write-Host "Extracting event process references..."
 
 $EventProcessReferences = @()
@@ -912,10 +1007,16 @@ foreach ($Event in $Events) {
     }
 }
 
+Complete-HalonStageTimer `
+    -Stage "Correlation.EventReferences" `
+    -Stopwatch $StageTimer `
+    -Metrics $PerformanceMetrics `
+    -ItemCount @($EventProcessReferences).Count
+
 # ---------------------------------------------
 # EVENT / HISTORICAL PROCESS CORRELATION
 # ---------------------------------------------
-
+$StageTimer = Start-HalonStageTimer
 Write-Host "Correlating events with historical processes..."
 
 $EventProcessCorrelations = @()
@@ -1179,7 +1280,11 @@ foreach ($Reference in $EventProcessReferences) {
         }
     }
 }
-
+Complete-HalonStageTimer `
+    -Stage "Correlation.EventToProcess" `
+    -Stopwatch $StageTimer `
+    -Metrics $PerformanceMetrics `
+    -ItemCount @($EventProcessCorrelations).Count
 # ---------------------------------------------
 # WRITE EVENT / PROCESS CORRELATION
 # ---------------------------------------------
@@ -1548,9 +1653,9 @@ $TimelineExport = $Timeline |
             Category = $_.Category
             EventSignature          = $_.EventSignature
             SeverityScore           = $_.SeverityScore
-            BootSessionId = ` $_.BootSessionId
-            BootSessionActive = ` $_.BootSessionActive
-            SecondsSincePreviousEvent = ` $_.SecondsSincePreviousEvent
+            BootSessionId = $_.BootSessionId
+            BootSessionActive = $_.BootSessionActive
+            SecondsSincePreviousEvent = $_.SecondsSincePreviousEvent
         }
     }
 
@@ -2089,9 +2194,9 @@ foreach ($Anchor in $IncidentAnchors) {
 
                 AnchorType = $_.AnchorType
                 Message    = $_.Message
-                BootSessionId = ` $_.BootSessionId
-                BootSessionActive = ` $_.BootSessionActive
-                SecondsSincePreviousEvent = ` $_.SecondsSincePreviousEvent
+                BootSessionId = $_.BootSessionId
+                BootSessionActive = $_.BootSessionActive
+                SecondsSincePreviousEvent = $_.SecondsSincePreviousEvent
             }
         }
 
@@ -2272,12 +2377,19 @@ $Manifest = [PSCustomObject]@{
     TimeZone = (Get-TimeZone).Id
     IdentityCollectionStatus = $IdentityCollectionStatus
     IdentityCollectionError  = $IdentityCollectionError
-    WindowsSessionCollectionStatus = `    $WindowsSessionCollectionStatus
-    WindowsSessionCollectionError = `    $WindowsSessionCollectionError
-    ProcessCreationAuditPolicy = `    $ProcessCreationAuditPolicy
-    ProcessCreationAuditEnabled = `    $ProcessCreationAuditEnabled
-    ProcessCreationEvidenceStatus = `    $ProcessCreationEvidenceStatus
-    ProcessCreationEventsCollected = @(    $ProcessCreationEventsRaw).Count
+    WindowsSessionCollectionStatus = `
+        $WindowsSessionCollectionStatus
+    WindowsSessionCollectionError = `
+        $WindowsSessionCollectionError
+    ProcessCreationAuditPolicy = `
+        $ProcessCreationAuditPolicy
+    ProcessCreationAuditEnabled = `
+        $ProcessCreationAuditEnabled
+    ProcessCreationEvidenceStatus = `
+        $ProcessCreationEvidenceStatus
+    ProcessCreationEventsCollected = @(
+        $ProcessCreationEventsRaw
+    ).Count
 }
 
 
@@ -2287,7 +2399,15 @@ $Manifest |
         (Join-Path $RunDirectory "manifest.json") `
         -Encoding UTF8
 
-
+Write-HalonPerformanceReport `
+    -Metrics $PerformanceMetrics `
+    -RunStopwatch $HalonRunStopwatch `
+    -Path (
+        Join-Path `
+            $RunDirectory `
+            "performance.json"
+    )
+    
 Write-Host ""
 Write-Host "======================================="
 Write-Host " HALON COLLECTION COMPLETE"
