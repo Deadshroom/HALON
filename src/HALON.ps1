@@ -15,6 +15,9 @@ $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\normalizers\Halon.IdentityNormalizer.ps1"
 . "$PSScriptRoot\normalizers\Halon.SessionNormalizer.ps1"
 
+. "$PSScriptRoot\reconstructors\Halon.IdentitySessionReconstructor.ps1"
+. "$PSScriptRoot\reconstructors\Halon.WindowsSessionReconstructor.ps1"
+
 . "$PSScriptRoot\exporters\Halon.JsonExporter.ps1"
 
 # ---------------------------------------------
@@ -532,96 +535,9 @@ $IdentityEvents = ConvertTo-HalonIdentityEvidence ` -RawEvents $IdentityEventsRa
 # RECONSTRUCT INTERACTIVE USER SESSIONS
 # ---------------------------------------------
 
-Write-Host "Reconstructing identity sessions..."
-
-$IdentitySessions = @()
-
-
-$InteractiveLogons = $IdentityEvents |
-    Where-Object {
-
-        $_.Action -eq "Logon" -and
-        (Test-HalonInteractiveLogonType -LogonType $_.LogonType)
-
-    } |
-    Sort-Object TimeCreated
-
-
-foreach ($Logon in $InteractiveLogons) {
-
-    $LogonTime = [datetime]$Logon.TimeCreated
-    $LogonId   = $Logon.LogonId
-
-
-    # Look for the first matching end-of-session event
-    # that occurs after this logon.
-
-    $SessionEndEvent = $IdentityEvents |
-        Where-Object {
-
-            $_.LogonId -eq $LogonId -and
-
-            [datetime]$_.TimeCreated -gt $LogonTime -and
-
-            $_.Action -in @(
-                "Logoff",
-                "UserInitiatedLogoff"
-            )
-
-        } |
-        Sort-Object TimeCreated |
-        Select-Object -First 1
-
-
-    if ($null -ne $SessionEndEvent) {
-
-        $SessionEnd = [datetime]$SessionEndEvent.TimeCreated
-        $SessionState = "Closed"
-        $EndReason = $SessionEndEvent.Action
-
-        $DurationMinutes = [math]::Round(
-            ($SessionEnd - $LogonTime).TotalMinutes,
-            2
-        )
-
-    }
-    else {
-
-        $SessionEnd = $null
-        $SessionState = "OpenAtCollectionEnd"
-        $EndReason = $null
-        $DurationMinutes = $null
-    }
-
-
-    $IdentitySessions += [PSCustomObject]@{
-
-        Identity = $Logon.Identity
-        IdentityClass = $Logon.IdentityClass
-        UserName = $Logon.UserName
-        Domain   = $Logon.Domain
-        UserSid  = $Logon.UserSid
-        LogonId   = $Logon.LogonId
-        LogonType = $Logon.LogonType
-
-        SessionStart = $LogonTime
-        SessionEnd   = $SessionEnd
-
-        DurationMinutes = $DurationMinutes
-
-        State     = $SessionState
-        EndReason = $EndReason
-
-        LogonRecordId = $Logon.RecordId
-
-        LogoffRecordId = if ($null -ne $SessionEndEvent) {
-            $SessionEndEvent.RecordId
-        }
-        else {
-            $null
-        }
-    }
-}
+$IdentitySessions = `
+    Get-HalonIdentitySessions `
+        -IdentityEvents $IdentityEvents
 
 # ---------------------------------------------
 # WRITE RECONSTRUCTED IDENTITY SESSIONS
@@ -734,108 +650,9 @@ $WindowsSessionEvents |
 # RECONSTRUCT WINDOWS SESSIONS
 # ---------------------------------------------
 
-Write-Host "Reconstructing Windows sessions..."
-
-$WindowsSessions = @()
-
-
-$SessionLogons = $WindowsSessionEvents |
-    Where-Object {
-        $_.Action -eq "SessionLogon"
-    } |
-    Sort-Object TimeCreated
-
-
-foreach ($Logon in $SessionLogons) {
-
-    $SessionStart = [datetime]$Logon.TimeCreated
-    $SessionId    = $Logon.SessionId
-    $SessionUser  = $Logon.User
-
-
-    # Find the first matching logoff occurring after
-    # this session logon.
-
-    $SessionLogoff = $WindowsSessionEvents |
-        Where-Object {
-
-            $_.Action -eq "SessionLogoff" -and
-
-            $_.SessionId -eq $SessionId -and
-
-            $_.User -eq $SessionUser -and
-
-            [datetime]$_.TimeCreated -gt $SessionStart
-        } |
-        Sort-Object TimeCreated |
-        Select-Object -First 1
-
-
-    if ($null -ne $SessionLogoff) {
-
-        $SessionEnd = [datetime]$SessionLogoff.TimeCreated
-        $SessionState = "Closed"
-
-    }
-    else {
-
-        $SessionEnd = $null
-        $SessionState = "OpenAtCollectionEnd"
-    }
-
-
-    # Collect disconnect/reconnect activity belonging
-    # to this session interval.
-
-    $StateEvents = $WindowsSessionEvents |
-        Where-Object {
-
-            $_.SessionId -eq $SessionId -and
-
-            $_.User -eq $SessionUser -and
-
-            $_.Action -in @(
-                "SessionDisconnect",
-                "SessionReconnect"
-            ) -and
-
-            [datetime]$_.TimeCreated -ge $SessionStart -and
-
-            (
-                $null -eq $SessionEnd -or
-                [datetime]$_.TimeCreated -le $SessionEnd
-            )
-        } |
-        Sort-Object TimeCreated
-
-
-    $WindowsSessions += [PSCustomObject]@{
-
-        User = $SessionUser
-
-        SessionId = $SessionId
-
-        SourceAddress = $Logon.SourceAddress
-
-        SessionStart = $SessionStart
-        SessionEnd   = $SessionEnd
-
-        State = $SessionState
-
-        LogonRecordId = $Logon.RecordId
-
-        LogoffRecordId = if ($null -ne $SessionLogoff) {
-            $SessionLogoff.RecordId
-        }
-        else {
-            $null
-        }
-
-        StateEvents = @(
-            $StateEvents
-        )
-    }
-}
+$WindowsSessions = `
+    Get-HalonWindowsSessions `
+        -WindowsSessionEvents $WindowsSessionEvents
 
 # ---------------------------------------------
 # WRITE RECONSTRUCTED WINDOWS SESSIONS
