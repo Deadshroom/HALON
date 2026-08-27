@@ -5,8 +5,11 @@ $ErrorActionPreference = "Stop"
 # ---------------------------------------------
 
 . "$PSScriptRoot\core\Halon.Common.ps1"
+
 . "$PSScriptRoot\collectors\Halon.HostCollector.ps1"
 . "$PSScriptRoot\collectors\Halon.EventCollector.ps1"
+
+. "$PSScriptRoot\normalizers\Halon.EventNormalizer.ps1"
 
 # ---------------------------------------------
 # HALON
@@ -140,42 +143,7 @@ $RawEvents = Get-HalonWindowsEventEvidence ` -StartTime $StartTime
 
 # Normalize Windows events into HALON's internal structure.
 
-$Events = $RawEvents |
-    ForEach-Object {
-
-        $OccurrenceTime = Get-HalonOccurrenceTime -Event $_
-        $Category = Get-HalonEventCategory -Event $_
-        $SeverityScore = Get-HalonSeverityScore `
-            -Level $_.LevelDisplayName
-        $EventSignature = Get-HalonEventSignature `
-            -Event $_
-        $EventUserSid = $null
-        $EventUser    = $null
-        $StructuredEventData = Get-HalonEventData -Event $_
-        if ($null -ne $_.UserId) {
-
-            $EventUserSid = $_.UserId.Value
-            $EventUser    = Resolve-HalonSid -Sid $_.UserId
-            }
-        [PSCustomObject]@{
-            LoggedTime     = $_.TimeCreated
-            OccurrenceTime = $OccurrenceTime
-            Category = $Category
-            LogName        = $_.LogName
-            RecordId       = $_.RecordId
-            Level          = $_.LevelDisplayName
-            EventID        = $_.Id
-            Provider       = $_.ProviderName
-            MachineName    = $_.MachineName
-            Message        = $_.Message
-            EventSignature = $EventSignature
-            SeverityScore  = $SeverityScore
-            EventUserSid = $EventUserSid
-            EventUser    = $EventUser
-            StructuredEventData = $StructuredEventData
-        }
-    }
-
+$Events = ConvertTo-HalonEventEvidence ` -RawEvents $RawEvents
 
 $Events |
     ConvertTo-Json -Depth 5 |
