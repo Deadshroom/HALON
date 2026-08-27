@@ -10,10 +10,12 @@ $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\collectors\Halon.EventCollector.ps1"
 . "$PSScriptRoot\collectors\Halon.IdentityCollector.ps1"
 . "$PSScriptRoot\collectors\Halon.SessionCollector.ps1"
+. "$PSScriptRoot\collectors\Halon.ProcessCollector.ps1"
 
 . "$PSScriptRoot\normalizers\Halon.EventNormalizer.ps1"
 . "$PSScriptRoot\normalizers\Halon.IdentityNormalizer.ps1"
 . "$PSScriptRoot\normalizers\Halon.SessionNormalizer.ps1"
+. "$PSScriptRoot\normalizers\Halon.ProcessNormalizer.ps1"
 
 . "$PSScriptRoot\reconstructors\Halon.IdentitySessionReconstructor.ps1"
 . "$PSScriptRoot\reconstructors\Halon.WindowsSessionReconstructor.ps1"
@@ -214,68 +216,24 @@ $IdentityCollectionError = `
 # PROCESS CREATION EVIDENCE
 # ---------------------------------------------
 $StageTimer = Start-HalonStageTimer
-Write-Host "Checking historical process creation evidence..."
-
-$ProcessCreationEventsRaw = @()
-
-$ProcessCreationEvidenceStatus = "Available"
-$ProcessCreationEvidenceError  = $null
 
 
-try {
-
-    $ProcessCreationEventsRaw = @(
-        Get-WinEvent `
-            -FilterHashtable @{
-                LogName   = "Security"
-                StartTime = $StartTime
-                Id        = 4688
-            } `
-            -ErrorAction Stop
-    )
+$ProcessCollection = `
+    Get-HalonProcessCreationEvidence `
+        -StartTime $StartTime
 
 
-    if ($ProcessCreationEventsRaw.Count -eq 0) {
-
-        $ProcessCreationEvidenceStatus = `
-            "NoEventsAvailable"
-    }
-}
-catch {
-
-    $ErrorMessage = $_.Exception.Message
+$ProcessCreationEventsRaw = `
+    $ProcessCollection.Events
 
 
-    if (
-        $ErrorMessage -like
-        "*No events were found that match the specified selection criteria*"
-    ) {
+$ProcessCreationEvidenceStatus = `
+    $ProcessCollection.Status
 
-        $ProcessCreationEvidenceStatus = `
-            "NoEventsAvailable"
 
-        $ProcessCreationEvidenceError = $null
-    }
-    elseif (
-        $_.Exception -is
-        [System.UnauthorizedAccessException]
-    ) {
+$ProcessCreationEvidenceError = `
+    $ProcessCollection.Error
 
-        $ProcessCreationEvidenceStatus = `
-            "UnavailableInsufficientPrivilege"
-
-        $ProcessCreationEvidenceError = `
-            $ErrorMessage
-    }
-    else {
-
-        $ProcessCreationEvidenceStatus = `
-            "Unavailable"
-
-        $ProcessCreationEvidenceError = `
-            $ErrorMessage
-    }
-}
 
 Complete-HalonStageTimer `
     -Stage "Process.Collection" `
@@ -287,181 +245,19 @@ Complete-HalonStageTimer `
 # NORMALIZE PROCESS CREATION EVIDENCE
 # ---------------------------------------------
 $StageTimer = Start-HalonStageTimer
-Write-Host "Normalizing historical process creation evidence..."
-
-$ProcessCreationEvents = $ProcessCreationEventsRaw |
-    Sort-Object TimeCreated |
-    ForEach-Object {
-
-        $EventData = Get-HalonEventData -Event $_
 
 
-# -------------------------------------
-# SUBJECT / CREATOR IDENTITY
-# -------------------------------------
+$ProcessCreationEvents = `
+    ConvertTo-HalonProcessCreationEvidence `
+        -RawEvents $ProcessCreationEventsRaw
 
-        $SubjectUserSid = `
-            $EventData["SubjectUserSid"]
-
-        $SubjectUserName = `
-            $EventData["SubjectUserName"]
-
-        $SubjectDomainName = `
-            $EventData["SubjectDomainName"]
-
-        $SubjectLogonId = `
-            $EventData["SubjectLogonId"]
-
-
-        if (
-            -not [string]::IsNullOrWhiteSpace(
-                $SubjectDomainName
-            ) -and
-
-            -not [string]::IsNullOrWhiteSpace(
-                $SubjectUserName
-            )
-        ) {
-
-            $SubjectIdentity = `
-                "$SubjectDomainName\$SubjectUserName"
-
-        }
-        else {
-
-            $SubjectIdentity = $SubjectUserName
-        }
-
-
-        # -------------------------------------
-        # NEW PROCESS
-        # -------------------------------------
-
-        $ProcessIdRaw = `
-            $EventData["NewProcessId"]
-
-        $ProcessIdDecimal = `
-            Convert-HalonHexToInt64 `
-                -Value $ProcessIdRaw
-
-        $ProcessName = `
-            $EventData["NewProcessName"]
-
-
-        # -------------------------------------
-        # CREATOR / PARENT PROCESS
-        # -------------------------------------
-
-        $ParentProcessIdRaw = `
-            $EventData["ProcessId"]
-
-        $ParentProcessIdDecimal = `
-            Convert-HalonHexToInt64 `
-                -Value $ParentProcessIdRaw
-
-        $ParentProcessName = `
-            $EventData["ParentProcessName"]
-
-
-        # -------------------------------------
-        # TARGET IDENTITY
-        # -------------------------------------
-
-        $TargetUserSid = `
-            $EventData["TargetUserSid"]
-
-        $TargetUserName = `
-            $EventData["TargetUserName"]
-
-        $TargetDomainName = `
-            $EventData["TargetDomainName"]
-
-        $TargetLogonId = `
-            $EventData["TargetLogonId"]
-
-
-        if (
-            -not [string]::IsNullOrWhiteSpace(
-                $TargetDomainName
-            ) -and
-
-            $TargetDomainName -ne "-" -and
-
-            -not [string]::IsNullOrWhiteSpace(
-                $TargetUserName
-            ) -and
-
-            $TargetUserName -ne "-"
-        ) {
-
-            $TargetIdentity = `
-                "$TargetDomainName\$TargetUserName"
-
-        }
-        else {
-
-            $TargetIdentity = $null
-        }
-
-
-        # -------------------------------------
-        # NORMALIZED PROCESS EVENT
-        # -------------------------------------
-
-        [PSCustomObject]@{
-
-            TimeCreated = $_.TimeCreated
-
-            SecurityRecordId = $_.RecordId
-
-            EventID = $_.Id
-
-
-            SubjectIdentity   = $SubjectIdentity
-            SubjectUserSid    = $SubjectUserSid
-            SubjectUserName   = $SubjectUserName
-            SubjectDomainName = $SubjectDomainName
-            SubjectLogonId    = $SubjectLogonId
-
-
-            ProcessIdRaw     = $ProcessIdRaw
-            ProcessIdDecimal = $ProcessIdDecimal
-            ProcessName      = $ProcessName
-
-
-            ParentProcessIdRaw = `
-                $ParentProcessIdRaw
-
-            ParentProcessIdDecimal = `
-                $ParentProcessIdDecimal
-
-            ParentProcessName = `
-                $ParentProcessName
-
-
-            TargetIdentity   = $TargetIdentity
-            TargetUserSid    = $TargetUserSid
-            TargetUserName   = $TargetUserName
-            TargetDomainName = $TargetDomainName
-            TargetLogonId    = $TargetLogonId
-
-
-            CommandLine = `
-                $EventData["CommandLine"]
-
-            TokenElevationType = `
-                $EventData["TokenElevationType"]
-
-            MandatoryLabel = `
-                $EventData["MandatoryLabel"]
-        }
-    }
 
 Complete-HalonStageTimer `
     -Stage "Process.Normalization" `
     -Stopwatch $StageTimer `
     -Metrics $PerformanceMetrics `
     -ItemCount @($ProcessCreationEvents).Count
+
 
 # ---------------------------------------------
 # WRITE PROCESS CREATION EVIDENCE
@@ -564,7 +360,7 @@ $ProcessEvidenceCapability = [PSCustomObject]@{
         $ProcessCreationEvidenceStatus
 
     Historical4688EventsCollected = @(
-        $ProcessCreationEventsRaw
+        $ProcessCreationEvents
     ).Count
 
     Historical4688CollectionError = `
@@ -2341,7 +2137,7 @@ $Manifest = [PSCustomObject]@{
     ProcessCreationEvidenceStatus = `
         $ProcessCreationEvidenceStatus
     ProcessCreationEventsCollected = @(
-        $ProcessCreationEventsRaw
+        $ProcessCreationEvents
     ).Count
 }
 
