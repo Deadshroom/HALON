@@ -6,6 +6,7 @@ $ErrorActionPreference = "Stop"
 
 . "$PSScriptRoot\core\Halon.Common.ps1"
 . "$PSScriptRoot\collectors\Halon.HostCollector.ps1"
+. "$PSScriptRoot\collectors\Halon.EventCollector.ps1"
 
 # ---------------------------------------------
 # HALON
@@ -135,121 +136,7 @@ $Services |
 # ---------------------------------------------
 # WINDOWS EVENT LOGS
 # ---------------------------------------------
-
-Write-Host "Collecting Windows Event Logs..."
-
-# Primary diagnostic events:
-# Critical, Error, and Warning from the last 24 hours.
-
-$DiagnosticFilter = @{
-    LogName   = @(
-        "System",
-        "Application"
-    )
-    StartTime = $StartTime
-    Level     = @(1,2,3)
-}
-
-$DiagnosticEvents = Get-WinEvent `
-    -FilterHashtable $DiagnosticFilter `
-    -ErrorAction SilentlyContinue
-
-
-# Lifecycle events:
-# These may be informational, so we collect them separately.
-
-$LifecycleFilter = @{
-    LogName   = "System"
-    StartTime = $StartTime
-    Id        = @(
-        41,      # Kernel-Power unexpected restart
-        1001,    # BugCheck
-        1074,    # Planned shutdown/restart
-        6005,    # Event Log service started
-        6006,    # Event Log service stopped
-        6008     # Unexpected shutdown
-    )
-}
-
-$LifecycleEvents = Get-WinEvent `
-    -FilterHashtable $LifecycleFilter `
-    -ErrorAction SilentlyContinue
-
-# ---------------------------------------------
-# SUPPLEMENTAL INCIDENT EVIDENCE
-# ---------------------------------------------
-
-Write-Host "Collecting supplemental incident evidence..."
-
-$SupplementalEvents = @()
-
-
-# Application crashes, hangs, and WER reports.
-# Some WER events may be Information level and would
-# therefore be missed by our normal diagnostic filter.
-
-$SupplementalEvents += Get-WinEvent `
-    -FilterHashtable @{
-        LogName   = "Application"
-        StartTime = $StartTime
-        Id        = @(1000,1001,1002)
-    } `
-    -ErrorAction SilentlyContinue
-
-
-# Hardware events from Windows Hardware Error Architecture.
-
-$SupplementalEvents += Get-WinEvent `
-    -FilterHashtable @{
-        LogName      = "System"
-        StartTime    = $StartTime
-        ProviderName = "Microsoft-Windows-WHEA-Logger"
-    } `
-    -ErrorAction SilentlyContinue
-
-
-# Storage-related Event IDs.
-# Provider classification later determines whether these
-# are actually storage evidence.
-
-$SupplementalEvents += Get-WinEvent `
-    -FilterHashtable @{
-        LogName   = "System"
-        StartTime = $StartTime
-        Id        = @(
-            7,
-            11,
-            15,
-            51,
-            55,
-            98,
-            129,
-            153,
-            157
-        )
-    } `
-    -ErrorAction SilentlyContinue
-
-
-# System-level crash / bugcheck reporting.
-
-$SupplementalEvents += Get-WinEvent `
-    -FilterHashtable @{
-        LogName   = "System"
-        StartTime = $StartTime
-        Id        = 1001
-    } `
-    -ErrorAction SilentlyContinue
-
-# Combine both collections and remove duplicates.
-
-$RawEvents = @(
-    $DiagnosticEvents
-    $LifecycleEvents
-    $SupplementalEvents
-) |
-    Sort-Object LogName, RecordId -Unique
-
+$RawEvents = Get-HalonWindowsEventEvidence ` -StartTime $StartTime
 
 # Normalize Windows events into HALON's internal structure.
 
