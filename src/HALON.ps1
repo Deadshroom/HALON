@@ -13,6 +13,8 @@ $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\normalizers\Halon.EventNormalizer.ps1"
 . "$PSScriptRoot\normalizers\Halon.IdentityNormalizer.ps1"
 
+. "$PSScriptRoot\exporters\Halon.JsonExporter.ps1"
+
 # ---------------------------------------------
 # HALON
 # Portable Windows Incident Diagnostic
@@ -121,22 +123,19 @@ $SystemInfo |
 # ---------------------------------------------
 
 $Disks = Get-HalonDiskInformation
-$Disks |
-    ConvertTo-Json -Depth 4 |
-    Set-Content `
-        (Join-Path $RunDirectory "disks.json") `
-        -Encoding UTF8
+Write-HalonJsonArray `
+    -InputObject $Disks `
+    -Path (Join-Path $RunDirectory "disks.json") `
+    -Depth 4
 
 # ---------------------------------------------
 # SERVICES
 # ---------------------------------------------
 $Services = Get-HalonServiceInformation
-$Services |
-    ConvertTo-Json -Depth 4 |
-    Set-Content `
-        (Join-Path $RunDirectory "services.json") `
-        -Encoding UTF8
-
+Write-HalonJsonArray `
+    -InputObject $Services `
+    -Path (Join-Path $RunDirectory "services.json") `
+    -Depth 4
 
 # ---------------------------------------------
 # WINDOWS EVENT LOGS
@@ -480,12 +479,10 @@ $ProcessCreationEventExport = $ProcessCreationEvents |
     }
 
 
-$ProcessCreationEventExport |
-    ConvertTo-Json -Depth 6 |
-    Set-Content `
-        (Join-Path $RunDirectory "process-events.json") `
-        -Encoding UTF8
-
+Write-HalonJsonArray `
+    -InputObject $ProcessCreationEventExport `
+    -Path (Join-Path $RunDirectory "process-events.json") `
+    -Depth 6
 
 
 # ---------------------------------------------
@@ -671,11 +668,11 @@ $IdentitySessionExport = $IdentitySessions |
     }
 
 
-$IdentitySessionExport |
-    ConvertTo-Json -Depth 6 |
-    Set-Content `
-        (Join-Path $RunDirectory "identity-sessions.json") `
-        -Encoding UTF8
+Write-HalonJsonArray `
+    -InputObject $IdentitySessionExport `
+    -Path (Join-Path $RunDirectory "identity-sessions.json") `
+    -Depth 6
+
 # ---------------------------------------------
 # CURRENT WINDOWS SESSION SNAPSHOT
 # ---------------------------------------------
@@ -747,11 +744,10 @@ catch {
 # WRITE CURRENT SESSION SNAPSHOT
 # ---------------------------------------------
 
-$CurrentSessions |
-    ConvertTo-Json -Depth 5 |
-    Set-Content `
-        (Join-Path $RunDirectory "current-sessions.json") `
-        -Encoding UTF8
+Write-HalonJsonArray `
+    -InputObject $CurrentSessions `
+    -Path (Join-Path $RunDirectory "current-sessions.json") `
+    -Depth 5
 
 # ---------------------------------------------
 # WINDOWS SESSION LIFECYCLE EVIDENCE
@@ -1047,21 +1043,18 @@ $WindowsSessionExport = $WindowsSessions |
     }
 
 
-$WindowsSessionExport |
-    ConvertTo-Json -Depth 8 |
-    Set-Content `
-        (Join-Path $RunDirectory "windows-sessions.json") `
-        -Encoding UTF8
-
+Write-HalonJsonArray `
+    -InputObject $WindowsSessionExport `
+    -Path (Join-Path $RunDirectory "windows-sessions.json") `
+    -Depth 8
 # ---------------------------------------------
 # WRITE IDENTITY EVIDENCE
 # ---------------------------------------------
 
-$IdentityEvents |
-    ConvertTo-Json -Depth 6 |
-    Set-Content `
-        (Join-Path $RunDirectory "identity-events.json") `
-        -Encoding UTF8
+Write-HalonJsonArray `
+    -InputObject $IdentityEvents `
+    -Path (Join-Path $RunDirectory "identity-events.json") `
+    -Depth 6
 
 # ---------------------------------------------
 # PROCESS / LOGON CONTEXT CORRELATION
@@ -1196,11 +1189,10 @@ $ProcessLogonContextExport = $ProcessLogonContexts |
     }
 
 
-$ProcessLogonContextExport |
-    ConvertTo-Json -Depth 6 |
-    Set-Content `
-        (Join-Path $RunDirectory "process-logon-contexts.json") `
-        -Encoding UTF8
+Write-HalonJsonArray `
+    -InputObject $ProcessLogonContextExport `
+    -Path (Join-Path $RunDirectory "process-logon-contexts.json") `
+    -Depth 6
 
 # ---------------------------------------------
 # EVENT PROCESS REFERENCES
@@ -1615,33 +1607,14 @@ $EventProcessCorrelationExport = `
 Write-Host "Event process references found: $(@($EventProcessReferences).Count)"
 Write-Host "Event/process correlations built: $(@($EventProcessCorrelations).Count)"
 
-$EventProcessCorrelationPath = Join-Path `
-    $RunDirectory `
-    "event-process-correlations.json"
-
-
-if (@($EventProcessCorrelationExport).Count -eq 0) {
-
-    $EventProcessCorrelationJson = "[]"
-
-}
-else {
-
-    $EventProcessCorrelationJson = `
-        $EventProcessCorrelationExport |
-        ConvertTo-Json -Depth 7
-}
-
-
-Set-Content `
-    -Path $EventProcessCorrelationPath `
-    -Value $EventProcessCorrelationJson `
-    -Encoding UTF8
-
-
-Write-Host `
-    "Event/process correlation artifact created: $(Test-Path $EventProcessCorrelationPath)"
-
+Write-HalonJsonArray `
+    -InputObject $EventProcessCorrelationExport `
+    -Path (
+        Join-Path `
+            $RunDirectory `
+            "event-process-correlations.json"
+    ) `
+    -Depth 7
 
 # ---------------------------------------------
 # EVIDENCE CATEGORY SUMMARY
@@ -1661,12 +1634,10 @@ $EvidenceSummary = $Events |
     }
 
 
-$EvidenceSummary |
-    ConvertTo-Json -Depth 4 |
-    Set-Content `
-        (Join-Path $RunDirectory "evidence-summary.json") `
-        -Encoding UTF8
-
+Write-HalonJsonArray `
+    -InputObject $EvidenceSummary `
+    -Path (Join-Path $RunDirectory "evidence-summary.json") `
+    -Depth 4
 # ---------------------------------------------
 # CHRONOLOGICAL TIMELINE
 # ---------------------------------------------
@@ -1912,11 +1883,10 @@ $TimelineExport = $Timeline |
         }
     }
 
-$TimelineExport |
-    ConvertTo-Json -Depth 5 |
-    Set-Content `
-        (Join-Path $RunDirectory "timeline.json") `
-        -Encoding UTF8
+Write-HalonJsonArray `
+    -InputObject $TimelineExport `
+    -Path (Join-Path $RunDirectory "timeline.json") `
+    -Depth 5
 
 # ---------------------------------------------
 # FULL INCIDENT CONTEXT
@@ -2058,11 +2028,10 @@ foreach ($Anchor in $ContextAnchors) {
 }
 
 
-$IncidentContexts |
-    ConvertTo-Json -Depth 10 |
-    Set-Content `
-        (Join-Path $RunDirectory "incident-context.json") `
-        -Encoding UTF8
+Write-HalonJsonArray `
+    -InputObject $IncidentContexts `
+    -Path (Join-Path $RunDirectory "incident-context.json") `
+    -Depth 10
 
 # ---------------------------------------------
 # INCIDENT IDENTITY CORRELATION
@@ -2176,11 +2145,10 @@ foreach ($Anchor in $ContextAnchors) {
 }
 
 
-$IncidentIdentityContexts |
-    ConvertTo-Json -Depth 8 |
-    Set-Content `
-        (Join-Path $RunDirectory "incident-identities.json") `
-        -Encoding UTF8
+Write-HalonJsonArray `
+    -InputObject $IncidentIdentityContexts `
+    -Path (Join-Path $RunDirectory "incident-identities.json") `
+    -Depth 8
 
 # ---------------------------------------------
 # WINDOWS SESSION / INCIDENT CORRELATION
@@ -2315,11 +2283,14 @@ foreach ($Anchor in $ContextAnchors) {
 }
 
 
-$WindowsSessionIncidentContexts |
-    ConvertTo-Json -Depth 8 |
-    Set-Content `
-        (Join-Path $RunDirectory "windows-sessions-at-incident.json") `
-        -Encoding UTF8    
+Write-HalonJsonArray `
+    -InputObject $WindowsSessionIncidentContexts `
+    -Path (
+        Join-Path `
+            $RunDirectory `
+            "windows-sessions-at-incident.json"
+    ) `
+    -Depth 8
 
 # ---------------------------------------------
 # INCIDENT WINDOWS
@@ -2582,11 +2553,11 @@ $IncidentExport = $IncidentWindows |
     }
 
 
-$IncidentExport |
-    ConvertTo-Json -Depth 10 |
-    Set-Content `
-        (Join-Path $RunDirectory "incidents.json") `
-        -Encoding UTF8
+Write-HalonJsonArray `
+    -InputObject $IncidentExport `
+    -Path (Join-Path $RunDirectory "incidents.json") `
+    -Depth 10
+
 # ---------------------------------------------
 # EVENT PATTERN SUMMARY
 # ---------------------------------------------
@@ -2608,11 +2579,10 @@ $EventSummary = $Events |
     }
 
 
-$EventSummary |
-    ConvertTo-Json -Depth 4 |
-    Set-Content `
-        (Join-Path $RunDirectory "event-summary.json") `
-        -Encoding UTF8
+Write-HalonJsonArray `
+    -InputObject $EventSummary `
+    -Path (Join-Path $RunDirectory "event-summary.json") `
+    -Depth 4
 
 
 # ---------------------------------------------
