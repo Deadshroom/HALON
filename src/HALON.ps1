@@ -27,7 +27,10 @@ $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\correlators\Halon.IncidentIdentityCorrelator.ps1"
 . "$PSScriptRoot\correlators\Halon.IncidentSessionCorrelator.ps1"
 
+. "$PSScriptRoot\builders\Halon.SummaryBuilder.ps1"
+
 . "$PSScriptRoot\instrumentation\Halon.Performance.ps1"
+. "$PSScriptRoot\exporters\Halon.EvidenceExporter.ps1"
 
 . "$PSScriptRoot\exporters\Halon.JsonExporter.ps1"
 
@@ -268,75 +271,10 @@ Complete-HalonStageTimer `
 # WRITE PROCESS CREATION EVIDENCE
 # ---------------------------------------------
 
-$ProcessCreationEventExport = $ProcessCreationEvents |
-    ForEach-Object {
-
-        [PSCustomObject]@{
-
-            TimeCreated = (
-                [datetime]$_.TimeCreated
-            ).ToString(
-                "MM/dd/yyyy HH:mm:ss"
-            )
-
-            SecurityRecordId = `
-                $_.SecurityRecordId
-
-            EventID = `
-                $_.EventID
-
-
-            SubjectIdentity = `
-                $_.SubjectIdentity
-
-            SubjectUserSid = `
-                $_.SubjectUserSid
-
-            SubjectLogonId = `
-                $_.SubjectLogonId
-
-
-            ProcessIdRaw = `
-                $_.ProcessIdRaw
-
-            ProcessIdDecimal = `
-                $_.ProcessIdDecimal
-
-            ProcessName = `
-                $_.ProcessName
-
-
-            ParentProcessIdRaw = `
-                $_.ParentProcessIdRaw
-
-            ParentProcessIdDecimal = `
-                $_.ParentProcessIdDecimal
-
-            ParentProcessName = `
-                $_.ParentProcessName
-
-
-            TargetIdentity = `
-                $_.TargetIdentity
-
-            TargetUserSid = `
-                $_.TargetUserSid
-
-            TargetLogonId = `
-                $_.TargetLogonId
-
-
-            CommandLine = `
-                $_.CommandLine
-
-            TokenElevationType = `
-                $_.TokenElevationType
-
-            MandatoryLabel = `
-                $_.MandatoryLabel
-        }
-    }
-
+$ProcessCreationEventExport = @(
+    ConvertTo-HalonProcessCreationExport `
+        -ProcessCreationEvents $ProcessCreationEvents
+)
 
 Write-HalonJsonArray `
     -InputObject $ProcessCreationEventExport `
@@ -414,47 +352,10 @@ Complete-HalonStageTimer `
 # WRITE RECONSTRUCTED IDENTITY SESSIONS
 # ---------------------------------------------
 
-$IdentitySessionExport = $IdentitySessions |
-    ForEach-Object {
-
-        [PSCustomObject]@{
-
-            Identity = $_.Identity
-            IdentityClass = $_.IdentityClass
-            UserName = $_.UserName
-            Domain   = $_.Domain
-            UserSid  = $_.UserSid
-            LogonId   = $_.LogonId
-            LogonType = $_.LogonType
-
-            SessionStart = (
-                [datetime]$_.SessionStart
-            ).ToString(
-                "MM/dd/yyyy HH:mm:ss"
-            )
-
-            SessionEnd = if ($null -ne $_.SessionEnd) {
-
-                (
-                    [datetime]$_.SessionEnd
-                ).ToString(
-                    "MM/dd/yyyy HH:mm:ss"
-                )
-
-            }
-            else {
-                $null
-            }
-
-            DurationMinutes = $_.DurationMinutes
-
-            State     = $_.State
-            EndReason = $_.EndReason
-
-            LogonRecordId  = $_.LogonRecordId
-            LogoffRecordId = $_.LogoffRecordId
-        }
-    }
+$IdentitySessionExport = @(
+    ConvertTo-HalonIdentitySessionExport `
+        -IdentitySessions $IdentitySessions
+)
 
 
 Write-HalonJsonArray `
@@ -550,61 +451,10 @@ Complete-HalonStageTimer `
 # WRITE RECONSTRUCTED WINDOWS SESSIONS
 # ---------------------------------------------
 
-$WindowsSessionExport = $WindowsSessions |
-    ForEach-Object {
-
-        [PSCustomObject]@{
-
-            User = $_.User
-
-            SessionId = $_.SessionId
-
-            SourceAddress = $_.SourceAddress
-
-            SessionStart = (
-                [datetime]$_.SessionStart
-            ).ToString(
-                "MM/dd/yyyy HH:mm:ss"
-            )
-
-            SessionEnd = if ($null -ne $_.SessionEnd) {
-
-                (
-                    [datetime]$_.SessionEnd
-                ).ToString(
-                    "MM/dd/yyyy HH:mm:ss"
-                )
-
-            }
-            else {
-                $null
-            }
-
-            State = $_.State
-
-            LogonRecordId  = $_.LogonRecordId
-            LogoffRecordId = $_.LogoffRecordId
-
-            StateEvents = @(
-                $_.StateEvents |
-                    ForEach-Object {
-
-                        [PSCustomObject]@{
-
-                            TimeCreated = (
-                                [datetime]$_.TimeCreated
-                            ).ToString(
-                                "MM/dd/yyyy HH:mm:ss"
-                            )
-
-                            Action   = $_.Action
-                            RecordId = $_.RecordId
-                        }
-                    }
-            )
-        }
-    }
-
+$WindowsSessionExport = @(
+    ConvertTo-HalonWindowsSessionExport `
+        -WindowsSessions $WindowsSessions
+)
 
 Write-HalonJsonArray `
     -InputObject $WindowsSessionExport `
@@ -659,54 +509,10 @@ Complete-HalonStageTimer `
 # WRITE PROCESS / LOGON CONTEXT
 # ---------------------------------------------
 
-$ProcessLogonContextExport = $ProcessLogonContexts |
-    ForEach-Object {
-
-        [PSCustomObject]@{
-
-            ProcessTime = (
-                [datetime]$_.ProcessTime
-            ).ToString(
-                "MM/dd/yyyy HH:mm:ss"
-            )
-
-            ProcessId = $_.ProcessId
-            ProcessIdRaw = $_.ProcessIdRaw
-            ProcessName = $_.ProcessName
-
-            ParentProcessId = $_.ParentProcessId
-            ParentProcessName = $_.ParentProcessName
-
-            SubjectIdentity = $_.SubjectIdentity
-            SubjectUserSid = $_.SubjectUserSid
-            SubjectLogonId = $_.SubjectLogonId
-
-            LogonContextFound = $_.LogonContextFound
-            LogonIdentity = $_.LogonIdentity
-            LogonUserSid = $_.LogonUserSid
-            LogonType = $_.LogonType
-
-            LogonTime = if ($null -ne $_.LogonTime) {
-
-                (
-                    [datetime]$_.LogonTime
-                ).ToString(
-                    "MM/dd/yyyy HH:mm:ss"
-                )
-            }
-            else {
-                $null
-            }
-
-            ProcessSecurityRecordId = `
-                $_.ProcessSecurityRecordId
-
-            LogonSecurityRecordId = `
-                $_.LogonSecurityRecordId
-
-            EvidenceBasis = $_.EvidenceBasis
-        }
-    }
+$ProcessLogonContextExport = @(
+    ConvertTo-HalonProcessLogonContextExport `
+        -ProcessLogonContexts $ProcessLogonContexts
+)
 
 
 Write-HalonJsonArray `
@@ -1028,93 +834,10 @@ Complete-HalonStageTimer `
 # WRITE EVENT / PROCESS CORRELATION
 # ---------------------------------------------
 
-$EventProcessCorrelationExport = `
-    $EventProcessCorrelations |
-    ForEach-Object {
-
-        [PSCustomObject]@{
-
-            EventTime = (
-                [datetime]$_.EventTime
-            ).ToString(
-                "MM/dd/yyyy HH:mm:ss"
-            )
-
-            EventRecordId = $_.EventRecordId
-
-            EventProvider = $_.EventProvider
-            EventID       = $_.EventID
-            EventLevel    = $_.EventLevel
-
-
-            ReferencedProcessId = `
-                $_.ReferencedProcessId
-
-            ReferencedProcessName = `
-                $_.ReferencedProcessName
-
-            ReferencedProcessPath = `
-                $_.ReferencedProcessPath
-
-
-            HistoricalProcessFound = `
-                $_.HistoricalProcessFound
-
-            MatchBasis = `
-                $_.MatchBasis
-
-            ProcessAgeAtEventSeconds = `
-                $_.ProcessAgeAtEventSeconds
-
-
-            HistoricalProcessCreated = if (
-                $null -ne $_.HistoricalProcessCreated
-            ) {
-
-                (
-                    [datetime]$_.HistoricalProcessCreated
-                ).ToString(
-                    "MM/dd/yyyy HH:mm:ss"
-                )
-            }
-            else {
-
-                $null
-            }
-
-
-            HistoricalProcessName = `
-                $_.HistoricalProcessName
-
-            ParentProcessId = `
-                $_.ParentProcessId
-
-            ParentProcessName = `
-                $_.ParentProcessName
-
-
-            SubjectIdentity = `
-                $_.SubjectIdentity
-
-            SubjectUserSid = `
-                $_.SubjectUserSid
-
-            SubjectLogonId = `
-                $_.SubjectLogonId
-
-
-            LogonContextFound = `
-                $_.LogonContextFound
-
-            LogonIdentity = `
-                $_.LogonIdentity
-
-
-            EvidenceBasis = `
-                $_.EvidenceBasis
-        }
-    }
-
+$EventProcessCorrelationExport = @(
+    ConvertTo-HalonEventProcessCorrelationExport `
+        -EventProcessCorrelations $EventProcessCorrelations
+)
 # ---------------------------------------------
 # GUARANTEED EVENT / PROCESS CORRELATION EXPORT
 # ---------------------------------------------
@@ -1135,19 +858,10 @@ Write-HalonJsonArray `
 # EVIDENCE CATEGORY SUMMARY
 # ---------------------------------------------
 
-Write-Host "Categorizing incident evidence..."
-
-$EvidenceSummary = $Events |
-    Group-Object Category |
-    Sort-Object Count -Descending |
-    ForEach-Object {
-
-        [PSCustomObject]@{
-            Category = $_.Name
-            Count    = $_.Count
-        }
-    }
-
+$EvidenceSummary = @(
+    Get-HalonEvidenceSummary `
+        -Events $Events
+)
 
 Write-HalonJsonArray `
     -InputObject $EvidenceSummary `
@@ -1160,30 +874,11 @@ Write-HalonJsonArray `
 $Timeline = Get-HalonTimeline `
     -Events $Events
 
-    
-$TimelineExport = $Timeline |
-    ForEach-Object {
+$TimelineExport = @(
+    ConvertTo-HalonTimelineExport `
+        -Timeline $Timeline
+)
 
-        [PSCustomObject]@{
-            LoggedTime     = ([datetime]$_.LoggedTime).ToString("MM/dd/yyyy HH:mm:ss")
-            OccurrenceTime = ([datetime]$_.OccurrenceTime).ToString("MM/dd/yyyy HH:mm:ss")
-            LogName        = $_.LogName
-            RecordId       = $_.RecordId
-            Level          = $_.Level
-            EventID        = $_.EventID
-            Provider       = $_.Provider
-            AnchorType     = $_.AnchorType
-            Message        = $_.Message
-            Category = $_.Category
-            EventSignature          = $_.EventSignature
-            SeverityScore           = $_.SeverityScore
-            EventUserSid = `    $_.EventUserSid
-            EventUser = `    $_.EventUser
-            BootSessionId = $_.BootSessionId
-            BootSessionActive = $_.BootSessionActive
-            SecondsSincePreviousEvent = $_.SecondsSincePreviousEvent
-        }
-    }
 
 Write-HalonJsonArray `
     -InputObject $TimelineExport `
@@ -1260,106 +955,10 @@ $IncidentWindows = `
 # INCIDENT JSON EXPORT
 # ---------------------------------------------
 
-$IncidentExport = $IncidentWindows |
-    ForEach-Object {
-
-        $Incident = $_
-
-
-        $ExportEvents = $Incident.Events |
-            ForEach-Object {
-
-                [PSCustomObject]@{
-
-                    OccurrenceTime = (
-                        [datetime]$_.OccurrenceTime
-                    ).ToString(
-                        "MM/dd/yyyy HH:mm:ss"
-                    )
-
-                    LoggedTime = (
-                        [datetime]$_.LoggedTime
-                    ).ToString(
-                        "MM/dd/yyyy HH:mm:ss"
-                    )
-
-                    MinutesFromIncident = `
-                        $_.MinutesFromIncident
-
-                    IncidentPhase = `
-                        $_.IncidentPhase
-
-                    Position = `
-                        $_.Position
-
-                    Category = `
-                        $_.Category
-
-                    Level = `
-                        $_.Level
-
-                    SeverityScore = `
-                        $_.SeverityScore
-
-                    EventID = `
-                        $_.EventID
-
-                    Provider = `
-                        $_.Provider
-
-                    LifecycleContext = `
-                        $_.LifecycleContext
-
-                    EventSignature = `
-                        $_.EventSignature
-
-                    OccurrencesInCollection = `
-                        $_.OccurrencesInCollection
-
-                    OccurrencesInIncidentWindow = `
-                        $_.OccurrencesInIncidentWindow
-
-                    AnchorType = `
-                        $_.AnchorType
-
-                    Message = `
-                        $_.Message
-                }
-            }
-
-
-        [PSCustomObject]@{
-
-            IncidentType = `
-                $Incident.IncidentType
-
-            AnchorTime = (
-                [datetime]$Incident.AnchorTime
-            ).ToString(
-                "MM/dd/yyyy HH:mm:ss"
-            )
-
-            WindowStart = (
-                [datetime]$Incident.WindowStart
-            ).ToString(
-                "MM/dd/yyyy HH:mm:ss"
-            )
-
-            WindowEnd = (
-                [datetime]$Incident.WindowEnd
-            ).ToString(
-                "MM/dd/yyyy HH:mm:ss"
-            )
-
-            EventCount = `
-                $Incident.EventCount
-
-            Events = @(
-                $ExportEvents
-            )
-        }
-    }
-
+$IncidentExport = @(
+    ConvertTo-HalonIncidentExport `
+        -IncidentWindows $IncidentWindows
+)
 
 Write-HalonJsonArray `
     -InputObject $IncidentExport `
@@ -1370,22 +969,10 @@ Write-HalonJsonArray `
 # EVENT PATTERN SUMMARY
 # ---------------------------------------------
 
-Write-Host "Grouping recurring events..."
-
-$EventSummary = $Events |
-    Group-Object Provider, EventID, Level |
-    Sort-Object Count -Descending |
-    ForEach-Object {
-
-        [PSCustomObject]@{
-
-            Count    = $_.Count
-            Provider = $_.Group[0].Provider
-            EventID  = $_.Group[0].EventID
-            Level    = $_.Group[0].Level
-        }
-    }
-
+$EventSummary = @(
+    Get-HalonEventSummary `
+        -Events $Events
+)
 
 Write-HalonJsonArray `
     -InputObject $EventSummary `
