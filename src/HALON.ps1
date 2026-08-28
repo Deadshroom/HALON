@@ -21,6 +21,7 @@ $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\reconstructors\Halon.WindowsSessionReconstructor.ps1"
 
 . "$PSScriptRoot\correlators\Halon.ProcessLogonCorrelator.ps1"
+. "$PSScriptRoot\correlators\Halon.EventProcessCorrelator.ps1"
 
 . "$PSScriptRoot\instrumentation\Halon.Performance.ps1"
 
@@ -713,48 +714,13 @@ Write-HalonJsonArray `
 # EVENT PROCESS REFERENCES
 # ---------------------------------------------
 $StageTimer = Start-HalonStageTimer
-Write-Host "Extracting event process references..."
-
-$EventProcessReferences = @()
 
 
-foreach ($Event in $Events) {
+$EventProcessReferences = @(
+    Get-HalonEventProcessReferences `
+        -Events $Events
+)
 
-    $ProcessReference = Get-HalonEventProcessReference `
-        -Event $Event
-
-
-    if ($ProcessReference.HasProcessReference) {
-
-        $EventProcessReferences += [PSCustomObject]@{
-
-            EventTime = $Event.OccurrenceTime
-
-            EventRecordId = $Event.RecordId
-
-            EventProvider = $Event.Provider
-            EventID       = $Event.EventID
-            EventLevel    = $Event.Level
-
-            ReferenceType = `
-                $ProcessReference.ReferenceType
-
-            ReferencedProcessIdRaw = `
-                $ProcessReference.ProcessIdRaw
-
-            ReferencedProcessId = `
-                $ProcessReference.ProcessIdDecimal
-
-            ReferencedProcessName = `
-                $ProcessReference.ProcessName
-
-            ReferencedProcessPath = `
-                $ProcessReference.ProcessPath
-
-            EventMessage = $Event.Message
-        }
-    }
-}
 
 Complete-HalonStageTimer `
     -Stage "Correlation.EventReferences" `
@@ -762,6 +728,26 @@ Complete-HalonStageTimer `
     -Metrics $PerformanceMetrics `
     -ItemCount @($EventProcessReferences).Count
 
+
+# ---------------------------------------------
+# EVENT / HISTORICAL PROCESS CORRELATION
+# ---------------------------------------------
+
+$StageTimer = Start-HalonStageTimer
+
+
+$EventProcessCorrelations = @(
+    Get-HalonEventProcessCorrelations `
+        -EventProcessReferences $EventProcessReferences `
+        -ProcessLogonContexts $ProcessLogonContexts
+)
+
+
+Complete-HalonStageTimer `
+    -Stage "Correlation.EventToProcess" `
+    -Stopwatch $StageTimer `
+    -Metrics $PerformanceMetrics `
+    -ItemCount @($EventProcessCorrelations).Count
 # ---------------------------------------------
 # EVENT / HISTORICAL PROCESS CORRELATION
 # ---------------------------------------------
