@@ -562,16 +562,24 @@ if ($FailedResults.Count -gt 0) {
 # ---------------------------------------------
 
 $ScriptDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ResultsDirectory = Join-Path `
+    $ScriptDirectory `
+    "results"
+
+New-Item `
+    -Path $ResultsDirectory `
+    -ItemType Directory `
+    -Force |
+    Out-Null
 
 $ResultPath = Join-Path `
-    $ScriptDirectory `
+    $ResultsDirectory `
     "process-event-retrieval-results.csv"
 
 $SummaryPath = Join-Path `
-    $ScriptDirectory `
+    $ResultsDirectory `
     "process-event-retrieval-summary.csv"
-
-
+    
 $Results |
     Export-Csv `
         -Path $ResultPath `

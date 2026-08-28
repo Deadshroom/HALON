@@ -23,3 +23,6 @@ Desktop.ini
 # Editor / temporary files
 *.tmp
 *.bak
+
+# Generated benchmark results
+benchmarks/results/

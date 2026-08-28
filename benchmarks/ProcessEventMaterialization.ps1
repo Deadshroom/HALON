@@ -569,12 +569,22 @@ if ($FailedResults.Count -gt 0) {
 
 $ScriptDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-$ResultPath = Join-Path `
+$ResultsDirectory = Join-Path `
     $ScriptDirectory `
+    "results"
+
+New-Item `
+    -Path $ResultsDirectory `
+    -ItemType Directory `
+    -Force |
+    Out-Null
+
+$ResultPath = Join-Path `
+    $ResultsDirectory `
     "process-event-materialization-results.csv"
 
 $SummaryPath = Join-Path `
-    $ScriptDirectory `
+    $ResultsDirectory `
     "process-event-materialization-summary.csv"
 
 $Results |
