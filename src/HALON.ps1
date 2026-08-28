@@ -19,6 +19,7 @@ $ErrorActionPreference = "Stop"
 
 . "$PSScriptRoot\reconstructors\Halon.IdentitySessionReconstructor.ps1"
 . "$PSScriptRoot\reconstructors\Halon.WindowsSessionReconstructor.ps1"
+. "$PSScriptRoot\reconstructors\Halon.TimelineReconstructor.ps1"
 
 . "$PSScriptRoot\correlators\Halon.ProcessLogonCorrelator.ps1"
 . "$PSScriptRoot\correlators\Halon.EventProcessCorrelator.ps1"
@@ -1150,227 +1151,12 @@ Write-HalonJsonArray `
     -Path (Join-Path $RunDirectory "evidence-summary.json") `
     -Depth 4
 # ---------------------------------------------
-# CHRONOLOGICAL TIMELINE
+# TIMELINE RECONSTRUCTION
 # ---------------------------------------------
 
-Write-Host "Building chronological timeline..."
+$Timeline = Get-HalonTimeline `
+    -Events $Events
 
-$Timeline = $Events |
-    Sort-Object OccurrenceTime |
-    ForEach-Object {
-
-        $Event = $_
-        $AnchorType = $null
-
-        switch ($Event.EventID) {
-
-            41 {
-                if ($Event.Provider -like "*Kernel-Power*") {
-                    $AnchorType = "UnexpectedRestart"
-                }
-            }
-
-            1001 {
-                if ($Event.Provider -like "*BugCheck*") {
-                    $AnchorType = "BugCheck"
-                }
-            }
-
-            1074 {
-                if ($Event.Provider -like "*User32*") {
-                    $AnchorType = "PlannedShutdownOrRestart"
-                }
-            }
-
-            6005 {
-                if ($Event.Provider -eq "EventLog") {
-                    $AnchorType = "EventLogStarted"
-                }
-            }
-
-            6006 {
-                if ($Event.Provider -eq "EventLog") {
-                    $AnchorType = "EventLogStopped"
-                }
-            }
-
-            6008 {
-                if ($Event.Provider -eq "EventLog") {
-                    $AnchorType = "UnexpectedShutdownConfirmed"
-                }
-            }
-        }
-
-        [PSCustomObject]@{
-            LoggedTime     = $Event.LoggedTime
-            OccurrenceTime = $Event.OccurrenceTime
-            LogName     = $Event.LogName
-            RecordId    = $Event.RecordId
-            Level       = $Event.Level
-            EventID     = $Event.EventID
-            Provider    = $Event.Provider
-            AnchorType  = $AnchorType
-            Message     = $Event.Message
-            Category       = $Event.Category
-            EventSignature = $Event.EventSignature
-            SeverityScore  = $Event.SeverityScore
-        }
-    }
-
-# ---------------------------------------------
-# BOOT SESSION RECONSTRUCTION
-# ---------------------------------------------
-
-Write-Host "Reconstructing boot sessions..."
-
-$BootSessionNumber = 0
-$BootSessionActive = $false
-
-
-$Timeline = $Timeline |
-    ForEach-Object {
-
-        $Event = $_
-
-
-        # EventLog 6005 indicates that the Windows
-        # Event Log service has started.
-        #
-        # HALON uses this as a practical boot-session
-        # boundary.
-
-        if (
-            $Event.Provider -eq "EventLog" -and
-            $Event.EventID -eq 6005
-        ) {
-
-            $BootSessionNumber++
-            $BootSessionActive = $true
-        }
-
-
-        if ($BootSessionNumber -eq 0) {
-
-            $BootSessionId = "PRE_COLLECTION_BOOT"
-
-        }
-        else {
-
-            $BootSessionId = "BOOT_{0:D3}" -f $BootSessionNumber
-        }
-
-
-        $Event |
-            Add-Member `
-                -NotePropertyName BootSessionId `
-                -NotePropertyValue $BootSessionId `
-                -Force
-
-
-        $Event |
-            Add-Member `
-                -NotePropertyName BootSessionActive `
-                -NotePropertyValue $BootSessionActive `
-                -Force
-
-
-        # EventLog 6006 means the Event Log service
-        # stopped normally.
-
-        if (
-            $Event.Provider -eq "EventLog" -and
-            $Event.EventID -eq 6006
-        ) {
-
-            $BootSessionActive = $false
-        }
-
-
-        $Event
-    }
-
-# ---------------------------------------------
-# EVENT-TO-EVENT CHRONOLOGY
-# ---------------------------------------------
-
-Write-Host "Calculating event chronology deltas..."
-
-$PreviousEventTime = $null
-
-
-$Timeline = $Timeline |
-    ForEach-Object {
-
-        $EventTime = [datetime]$_.OccurrenceTime
-
-
-        if ($null -eq $PreviousEventTime) {
-
-            $SecondsSincePreviousEvent = $null
-
-        }
-        else {
-
-            $SecondsSincePreviousEvent = [math]::Round(
-                ($EventTime - $PreviousEventTime).TotalSeconds,
-                3
-            )
-        }
-
-
-        $_ |
-            Add-Member `
-                -NotePropertyName SecondsSincePreviousEvent `
-                -NotePropertyValue $SecondsSincePreviousEvent `
-                -Force
-
-
-        $PreviousEventTime = $EventTime
-
-        $_
-    }
-
-# ---------------------------------------------
-# COLLECTION RECURRENCE
-# ---------------------------------------------
-
-Write-Host "Calculating event recurrence..."
-
-$CollectionOccurrenceCounts = @{}
-
-$Timeline |
-    Group-Object EventSignature |
-    ForEach-Object {
-
-        if (-not [string]::IsNullOrWhiteSpace($_.Name)) {
-
-            $CollectionOccurrenceCounts[$_.Name] = $_.Count
-
-        }
-    }
-
-
-$Timeline = $Timeline |
-    ForEach-Object {
-
-        $OccurrenceCount = 0
-
-        if (
-            -not [string]::IsNullOrWhiteSpace($_.EventSignature) -and
-            $CollectionOccurrenceCounts.ContainsKey($_.EventSignature)
-        ) {
-            $OccurrenceCount =
-                $CollectionOccurrenceCounts[$_.EventSignature]
-        }
-
-        $_ |
-            Add-Member `
-                -NotePropertyName OccurrencesInCollection `
-                -NotePropertyValue $OccurrenceCount `
-                -Force
-
-        $_
-    }
     
 $TimelineExport = $Timeline |
     ForEach-Object {
@@ -1388,6 +1174,8 @@ $TimelineExport = $Timeline |
             Category = $_.Category
             EventSignature          = $_.EventSignature
             SeverityScore           = $_.SeverityScore
+            EventUserSid = `    $_.EventUserSid
+            EventUser = `    $_.EventUser
             BootSessionId = $_.BootSessionId
             BootSessionActive = $_.BootSessionActive
             SecondsSincePreviousEvent = $_.SecondsSincePreviousEvent
