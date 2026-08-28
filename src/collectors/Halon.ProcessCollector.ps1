@@ -2,6 +2,133 @@
 # HALON PROCESS EVIDENCE COLLECTOR
 # ---------------------------------------------
 
+function Get-HalonProcessAuditCapability {
+
+    $CurrentAuditPolicy = "Unknown"
+    $SuccessAuditingEnabled = $false
+    $AuditPolicyDetectionError = $null
+
+
+    try {
+
+        $AuditPolicyRaw = auditpol `
+            /get `
+            /subcategory:"Process Creation" `
+            /r
+
+
+        if (
+            $LASTEXITCODE -eq 0 -and
+            $AuditPolicyRaw
+        ) {
+
+            try {
+
+                $AuditPolicyData = `
+                    $AuditPolicyRaw |
+                    ConvertFrom-Csv |
+                    Select-Object -First 1
+
+
+                $InclusionSetting = `
+                    $AuditPolicyData.'Inclusion Setting'
+
+
+                if (
+                    -not [string]::IsNullOrWhiteSpace(
+                        $InclusionSetting
+                    )
+                ) {
+
+                    $CurrentAuditPolicy = `
+                        $InclusionSetting
+
+
+                    if (
+                        $InclusionSetting -match
+                        "Success"
+                    ) {
+
+                        $SuccessAuditingEnabled = `
+                            $true
+                    }
+                }
+            }
+            catch {
+
+                $CurrentAuditPolicy = `
+                    "Unknown"
+
+                $AuditPolicyDetectionError = `
+                    "HALON could not parse auditpol output."
+            }
+        }
+    }
+    catch {
+
+        $CurrentAuditPolicy = `
+            "Unknown"
+
+        $AuditPolicyDetectionError = `
+            $_.Exception.Message
+    }
+
+
+    return [PSCustomObject]@{
+
+        AuditSubcategory = `
+            "Process Creation"
+
+        CurrentAuditPolicy = `
+            $CurrentAuditPolicy
+
+        SuccessAuditingEnabled = `
+            $SuccessAuditingEnabled
+
+        AuditPolicyDetectionError = `
+            $AuditPolicyDetectionError
+    }
+}
+
+
+function New-HalonProcessEvidenceCapability {
+
+    param (
+        $AuditCapability,
+
+        $ProcessCollection,
+
+        $ProcessCreationEvents
+    )
+
+
+    return [PSCustomObject]@{
+
+        AuditSubcategory = `
+            $AuditCapability.AuditSubcategory
+
+
+        CurrentAuditPolicy = `
+            $AuditCapability.CurrentAuditPolicy
+
+        SuccessAuditingEnabled = `
+            $AuditCapability.SuccessAuditingEnabled
+
+        AuditPolicyDetectionError = `
+            $AuditCapability.AuditPolicyDetectionError
+
+
+        Historical4688Status = `
+            $ProcessCollection.Status
+
+        Historical4688EventsCollected = @(
+            $ProcessCreationEvents
+        ).Count
+
+        Historical4688CollectionError = `
+            $ProcessCollection.Error
+    }
+}
 
 function Get-HalonProcessCreationEvidence {
 

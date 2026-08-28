@@ -28,6 +28,7 @@ $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\correlators\Halon.IncidentSessionCorrelator.ps1"
 
 . "$PSScriptRoot\builders\Halon.SummaryBuilder.ps1"
+. "$PSScriptRoot\builders\Halon.ManifestBuilder.ps1"
 
 . "$PSScriptRoot\instrumentation\Halon.Performance.ps1"
 . "$PSScriptRoot\exporters\Halon.EvidenceExporter.ps1"
@@ -69,61 +70,8 @@ $PerformanceMetrics = `
 # PROCESS CREATION AUDIT CAPABILITY
 # ---------------------------------------------
 
-$ProcessCreationAuditPolicy  = "Unknown"
-$ProcessCreationAuditEnabled = $false
-$ProcessCreationAuditError   = $null
-
-
-try {
-
-    $AuditPolicyRaw = auditpol `
-        /get `
-        /subcategory:"Process Creation" `
-        /r
-
-    if ($LASTEXITCODE -eq 0 -and $AuditPolicyRaw) {
-
-        try {
-
-            $AuditPolicyData = $AuditPolicyRaw |
-                ConvertFrom-Csv |
-                Select-Object -First 1
-
-
-            $InclusionSetting = $AuditPolicyData.'Inclusion Setting'
-
-
-            if (
-                -not [string]::IsNullOrWhiteSpace(
-                    $InclusionSetting
-                )
-            ) {
-
-                $ProcessCreationAuditPolicy = `
-                    $InclusionSetting
-
-
-                if (
-                    $InclusionSetting -match "Success"
-                ) {
-
-                    $ProcessCreationAuditEnabled = $true
-                }
-            }
-        }
-        catch {
-
-            $ProcessCreationAuditPolicy = "Unknown"
-            $ProcessCreationAuditError  = `
-                "HALON could not parse auditpol output."
-        }
-    }
-}
-catch {
-
-    $ProcessCreationAuditPolicy = "Unknown"
-    $ProcessCreationAuditError  = $_.Exception.Message
-}
+$ProcessAuditCapability = `
+    Get-HalonProcessAuditCapability
 
 Write-Host ""
 Write-Host "======================================="
@@ -235,12 +183,7 @@ $ProcessCreationEventsRaw = `
     $ProcessCollection.Events
 
 
-$ProcessCreationEvidenceStatus = `
-    $ProcessCollection.Status
 
-
-$ProcessCreationEvidenceError = `
-    $ProcessCollection.Error
 
 
 Complete-HalonStageTimer `
@@ -286,29 +229,11 @@ Write-HalonJsonArray `
 # PROCESS EVIDENCE CAPABILITY
 # ---------------------------------------------
 
-$ProcessEvidenceCapability = [PSCustomObject]@{
-
-    AuditSubcategory = "Process Creation"
-
-    CurrentAuditPolicy = `
-        $ProcessCreationAuditPolicy
-
-    SuccessAuditingEnabled = `
-        $ProcessCreationAuditEnabled
-
-    AuditPolicyDetectionError = `
-        $ProcessCreationAuditError
-
-    Historical4688Status = `
-        $ProcessCreationEvidenceStatus
-
-    Historical4688EventsCollected = @(
-        $ProcessCreationEvents
-    ).Count
-
-    Historical4688CollectionError = `
-        $ProcessCreationEvidenceError
-}
+$ProcessEvidenceCapability = `
+    New-HalonProcessEvidenceCapability `
+        -AuditCapability $ProcessAuditCapability `
+        -ProcessCollection $ProcessCollection `
+        -ProcessCreationEvents $ProcessCreationEvents
 
 
 $ProcessEvidenceCapability |
@@ -984,32 +909,17 @@ Write-HalonJsonArray `
 # RUN MANIFEST
 # ---------------------------------------------
 
-$Manifest = [PSCustomObject]@{
-
-    Tool             = "HALON"
-    Version          = "0.1"
-    ComputerName     = $ComputerName
-    CollectionStart  = $StartTime
-    CollectionEnd    = Get-Date
-    EventsCollected  = $Events.Count
-    OutputDirectory  = $RunDirectory
-    TimeZone = (Get-TimeZone).Id
-    IdentityCollectionStatus = $IdentityCollectionStatus
-    IdentityCollectionError  = $IdentityCollectionError
-    WindowsSessionCollectionStatus = `
-        $WindowsSessionCollectionStatus
-    WindowsSessionCollectionError = `
-        $WindowsSessionCollectionError
-    ProcessCreationAuditPolicy = `
-        $ProcessCreationAuditPolicy
-    ProcessCreationAuditEnabled = `
-        $ProcessCreationAuditEnabled
-    ProcessCreationEvidenceStatus = `
-        $ProcessCreationEvidenceStatus
-    ProcessCreationEventsCollected = @(
-        $ProcessCreationEvents
-    ).Count
-}
+$Manifest = `
+    New-HalonRunManifest `
+        -ComputerName $ComputerName `
+        -CollectionStart $StartTime `
+        -OutputDirectory $RunDirectory `
+        -Events $Events `
+        -IdentityCollection $IdentityCollection `
+        -WindowsSessionCollection $WindowsSessionCollection `
+        -ProcessAuditCapability $ProcessAuditCapability `
+        -ProcessCollection $ProcessCollection `
+        -ProcessCreationEvents $ProcessCreationEvents
 
 
 $Manifest |
