@@ -20,9 +20,12 @@ $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\reconstructors\Halon.IdentitySessionReconstructor.ps1"
 . "$PSScriptRoot\reconstructors\Halon.WindowsSessionReconstructor.ps1"
 . "$PSScriptRoot\reconstructors\Halon.TimelineReconstructor.ps1"
+. "$PSScriptRoot\reconstructors\Halon.IncidentReconstructor.ps1"
 
 . "$PSScriptRoot\correlators\Halon.ProcessLogonCorrelator.ps1"
 . "$PSScriptRoot\correlators\Halon.EventProcessCorrelator.ps1"
+. "$PSScriptRoot\correlators\Halon.IncidentIdentityCorrelator.ps1"
+. "$PSScriptRoot\correlators\Halon.IncidentSessionCorrelator.ps1"
 
 . "$PSScriptRoot\instrumentation\Halon.Performance.ps1"
 
@@ -1188,143 +1191,18 @@ Write-HalonJsonArray `
     -Depth 5
 
 # ---------------------------------------------
-# FULL INCIDENT CONTEXT
+# INCIDENT RECONSTRUCTION
 # ---------------------------------------------
 
-Write-Host "Building full incident context..."
-
-$IncidentContexts = @()
-
-
-$ContextAnchors = $Timeline |
-    Where-Object {
-        $_.AnchorType -eq "UnexpectedShutdownConfirmed"
-    }
+$IncidentAnchors = `
+    Get-HalonIncidentAnchors `
+        -Timeline $Timeline
 
 
-foreach ($Anchor in $ContextAnchors) {
-
-    $AnchorTime = [datetime]$Anchor.OccurrenceTime
-
-
-    $ContextEvents = $Timeline |
-        ForEach-Object {
-
-            $EventTime = [datetime]$_.OccurrenceTime
-
-            $MinutesFromIncident = [math]::Round(
-                ($EventTime - $AnchorTime).TotalMinutes,
-                3
-            )
-
-
-            if ($_.RecordId -eq $Anchor.RecordId) {
-
-                $IncidentPhase = "INCIDENT"
-
-            }
-            elseif ($EventTime -lt $AnchorTime) {
-
-                $IncidentPhase = "PRE_INCIDENT"
-
-            }
-            else {
-
-                $IncidentPhase = "POST_INCIDENT"
-            }
-
-
-            $WithinFocusedWindow = (
-                $MinutesFromIncident -ge -30 -and
-                $MinutesFromIncident -le 10
-            )
-
-
-            [PSCustomObject]@{
-
-                OccurrenceTime = (
-                    [datetime]$_.OccurrenceTime
-                ).ToString(
-                    "MM/dd/yyyy HH:mm:ss"
-                )
-
-                LoggedTime = (
-                    [datetime]$_.LoggedTime
-                ).ToString(
-                    "MM/dd/yyyy HH:mm:ss"
-                )
-
-                MinutesFromIncident = `
-                    $MinutesFromIncident
-
-                IncidentPhase = `
-                    $IncidentPhase
-
-                WithinFocusedWindow = `
-                    $WithinFocusedWindow
-
-                BootSessionId = `
-                    $_.BootSessionId
-
-                BootSessionActive = `
-                    $_.BootSessionActive
-
-                SecondsSincePreviousEvent = `
-                    $_.SecondsSincePreviousEvent
-
-                LogName = `
-                    $_.LogName
-
-                RecordId = `
-                    $_.RecordId
-
-                Provider = `
-                    $_.Provider
-
-                EventID = `
-                    $_.EventID
-
-                Level = `
-                    $_.Level
-
-                SeverityScore = `
-                    $_.SeverityScore
-
-                Category = `
-                    $_.Category
-
-                EventSignature = `
-                    $_.EventSignature
-
-                OccurrencesInCollection = `
-                    $_.OccurrencesInCollection
-
-                AnchorType = `
-                    $_.AnchorType
-
-                Message = `
-                    $_.Message
-            }
-        }
-
-
-    $IncidentContexts += [PSCustomObject]@{
-
-        IncidentType = "UnexpectedShutdown"
-
-        AnchorTime = $AnchorTime.ToString(
-            "MM/dd/yyyy HH:mm:ss"
-        )
-
-        CollectionEventCount = @(
-            $ContextEvents
-        ).Count
-
-        Events = @(
-            $ContextEvents
-        )
-    }
-}
+$IncidentContexts = `
+    Get-HalonIncidentContexts `
+        -Timeline $Timeline `
+        -IncidentAnchors $IncidentAnchors
 
 
 Write-HalonJsonArray `
@@ -1335,113 +1213,12 @@ Write-HalonJsonArray `
 # ---------------------------------------------
 # INCIDENT IDENTITY CORRELATION
 # ---------------------------------------------
-
-Write-Host "Correlating identity sessions to incidents..."
-
-$IncidentIdentityContexts = @()
-
-
-foreach ($Anchor in $ContextAnchors) {
-
-    $AnchorTime = [datetime]$Anchor.OccurrenceTime
-
-
-    $SessionsAtIncident = $IdentitySessions |
-        Where-Object {
-
-            $SessionStart = [datetime]$_.SessionStart
-
-            if ($null -ne $_.SessionEnd) {
-
-                $SessionEnd = [datetime]$_.SessionEnd
-
-            }
-            else {
-
-                $SessionEnd = $null
-            }
-
-
-            $SessionStart -le $AnchorTime -and
-            (
-                $null -eq $SessionEnd -or
-                $SessionEnd -ge $AnchorTime
-            )
-        } |
-        ForEach-Object {
-
-            [PSCustomObject]@{
-
-                Identity      = $_.Identity
-                IdentityClass = $_.IdentityClass
-
-                UserName = $_.UserName
-                Domain   = $_.Domain
-                UserSid  = $_.UserSid
-
-                LogonId   = $_.LogonId
-                LogonType = $_.LogonType
-
-                SessionStart = (
-                    [datetime]$_.SessionStart
-                ).ToString(
-                    "MM/dd/yyyy HH:mm:ss"
-                )
-
-                SessionEnd = if ($null -ne $_.SessionEnd) {
-
-                    (
-                        [datetime]$_.SessionEnd
-                    ).ToString(
-                        "MM/dd/yyyy HH:mm:ss"
-                    )
-
-                }
-                else {
-
-                    $null
-                }
-
-                SessionEndKnown = (
-                    $null -ne $_.SessionEnd
-                )
-
-                SessionStateAtCollection = $_.State
-
-                LogonRecordId  = $_.LogonRecordId
-                LogoffRecordId = $_.LogoffRecordId
-
-                EvidenceBasis = "SecurityLogIntervalOverlap"
-            }
-        }
-
-
-    $IncidentIdentityContexts += [PSCustomObject]@{
-
-        IncidentType = "UnexpectedShutdown"
-
-        IncidentTime = $AnchorTime.ToString(
-            "MM/dd/yyyy HH:mm:ss"
-        )
-
-        IdentityCollectionStatus = `
-            $IdentityCollectionStatus
-
-        CollectionWindowStart = (
-            [datetime]$StartTime
-        ).ToString(
-            "MM/dd/yyyy HH:mm:ss"
-        )
-
-        SessionCount = @(
-            $SessionsAtIncident
-        ).Count
-
-        Sessions = @(
-            $SessionsAtIncident
-        )
-    }
-}
+$IncidentIdentityContexts = `
+    Get-HalonIncidentIdentityContexts `
+        -IncidentAnchors $IncidentAnchors `
+        -IdentitySessions $IdentitySessions `
+        -IdentityCollectionStatus $IdentityCollectionStatus `
+        -CollectionWindowStart $StartTime
 
 
 Write-HalonJsonArray `
@@ -1453,133 +1230,11 @@ Write-HalonJsonArray `
 # WINDOWS SESSION / INCIDENT CORRELATION
 # ---------------------------------------------
 
-Write-Host "Correlating Windows sessions to incidents..."
-
-$WindowsSessionIncidentContexts = @()
-
-
-foreach ($Anchor in $ContextAnchors) {
-
-    $AnchorTime = [datetime]$Anchor.OccurrenceTime
-
-
-    # Determine whether HALON's current collection window
-    # actually covers the incident occurrence time.
-
-    if ($AnchorTime -lt $StartTime) {
-
-        $SessionEvidenceCoverage = "IncidentBeforeCollectionWindow"
-
-    }
-    else {
-
-        $SessionEvidenceCoverage = "Covered"
-    }
-
-
-    # Only perform interval correlation when the incident
-    # itself is inside the collected session-history window.
-
-    if ($SessionEvidenceCoverage -eq "Covered") {
-
-        $SessionsAtIncident = @(
-            $WindowsSessions |
-                Where-Object {
-
-                    $SessionStart = [datetime]$_.SessionStart
-
-
-                    if ($null -ne $_.SessionEnd) {
-
-                        $SessionEnd = [datetime]$_.SessionEnd
-
-                    }
-                    else {
-
-                        $SessionEnd = $null
-                    }
-
-
-                    $SessionStart -le $AnchorTime -and
-                    (
-                        $null -eq $SessionEnd -or
-                        $SessionEnd -ge $AnchorTime
-                    )
-                } |
-                ForEach-Object {
-
-                    [PSCustomObject]@{
-
-                        User = $_.User
-
-                        SessionId = $_.SessionId
-
-                        SourceAddress = $_.SourceAddress
-
-                        SessionStart = (
-                            [datetime]$_.SessionStart
-                        ).ToString(
-                            "MM/dd/yyyy HH:mm:ss"
-                        )
-
-                        SessionEnd = if ($null -ne $_.SessionEnd) {
-
-                            (
-                                [datetime]$_.SessionEnd
-                            ).ToString(
-                                "MM/dd/yyyy HH:mm:ss"
-                            )
-
-                        }
-                        else {
-
-                            $null
-                        }
-
-                        SessionStateAtCollection = $_.State
-
-                        LogonRecordId = $_.LogonRecordId
-                        LogoffRecordId = $_.LogoffRecordId
-
-                        EvidenceBasis = `
-                            "LocalSessionManagerIntervalOverlap"
-                    }
-                }
-        )
-
-    }
-    else {
-
-        $SessionsAtIncident = @()
-    }
-
-
-    $WindowsSessionIncidentContexts += [PSCustomObject]@{
-
-        IncidentType = "UnexpectedShutdown"
-
-        IncidentTime = $AnchorTime.ToString(
-            "MM/dd/yyyy HH:mm:ss"
-        )
-
-        CollectionWindowStart = (
-            [datetime]$StartTime
-        ).ToString(
-            "MM/dd/yyyy HH:mm:ss"
-        )
-
-        SessionEvidenceCoverage = `
-            $SessionEvidenceCoverage
-
-        SessionCount = @(
-            $SessionsAtIncident
-        ).Count
-
-        Sessions = @(
-            $SessionsAtIncident
-        )
-    }
-}
+$WindowsSessionIncidentContexts = `
+    Get-HalonIncidentWindowsSessionContexts `
+        -IncidentAnchors $IncidentAnchors `
+        -WindowsSessions $WindowsSessions `
+        -CollectionWindowStart $StartTime
 
 
 Write-HalonJsonArray `
@@ -1595,156 +1250,10 @@ Write-HalonJsonArray `
 # INCIDENT WINDOWS
 # ---------------------------------------------
 
-Write-Host "Building enriched incident windows..."
-
-$IncidentWindows = @()
-
-
-$IncidentAnchors = $Timeline |
-    Where-Object {
-        $_.AnchorType -eq "UnexpectedShutdownConfirmed"
-    }
-
-
-foreach ($Anchor in $IncidentAnchors) {
-
-    $AnchorTime = [datetime]$Anchor.OccurrenceTime
-
-    $WindowStart = $AnchorTime.AddMinutes(-30)
-    $WindowEnd   = $AnchorTime.AddMinutes(10)
-
-
-    # -----------------------------------------
-    # Collect raw events inside incident window
-    # -----------------------------------------
-
-    $WindowEventsBase = @(
-        $Timeline |
-            Where-Object {
-
-                $EventTime = [datetime]$_.OccurrenceTime
-
-                $EventTime -ge $WindowStart -and
-                $EventTime -le $WindowEnd
-            }
-    )
-
-
-    # -----------------------------------------
-    # Count recurrence inside incident window
-    # -----------------------------------------
-
-    $IncidentOccurrenceCounts = @{}
-
-
-    $WindowEventsBase |
-        Group-Object EventSignature |
-        ForEach-Object {
-
-            $IncidentOccurrenceCounts[
-                $_.Name
-            ] = $_.Count
-        }
-
-
-    # -----------------------------------------
-    # Enrich incident events
-    # -----------------------------------------
-
-    $WindowEvents = $WindowEventsBase |
-        ForEach-Object {
-
-            $EventTime = [datetime]$_.OccurrenceTime
-
-            $MinutesFromIncident = [math]::Round(
-                ($EventTime - $AnchorTime).TotalMinutes,
-                2
-            )
-
-
-            if ($_.RecordId -eq $Anchor.RecordId) {
-
-                $IncidentPhase = "INCIDENT"
-                $Position      = "ANCHOR"
-
-            }
-            elseif ($EventTime -lt $AnchorTime) {
-
-                $IncidentPhase = "PRE_INCIDENT"
-                $Position      = "BEFORE"
-
-            }
-            else {
-
-                $IncidentPhase = "POST_INCIDENT"
-                $Position      = "AFTER"
-            }
-
-
-            $LifecycleContext = Get-HalonLifecycleContext `
-                -Event $_
-
-
-            [PSCustomObject]@{
-
-                OccurrenceTime = $_.OccurrenceTime
-                LoggedTime     = $_.LoggedTime
-
-                MinutesFromIncident = $MinutesFromIncident
-
-                IncidentPhase = $IncidentPhase
-                Position      = $Position
-
-                Category      = $_.Category
-
-                Level         = $_.Level
-                SeverityScore = $_.SeverityScore
-
-                EventID       = $_.EventID
-                Provider      = $_.Provider
-
-                LifecycleContext = $LifecycleContext
-
-                EventSignature = $_.EventSignature
-
-                OccurrencesInCollection = `
-                    $_.OccurrencesInCollection
-
-                OccurrencesInIncidentWindow = `
-                    $IncidentOccurrenceCounts[
-                        $_.EventSignature
-                    ]
-
-                AnchorType = $_.AnchorType
-                Message    = $_.Message
-                BootSessionId = $_.BootSessionId
-                BootSessionActive = $_.BootSessionActive
-                SecondsSincePreviousEvent = $_.SecondsSincePreviousEvent
-            }
-        }
-
-
-    # -----------------------------------------
-    # Create incident object
-    # -----------------------------------------
-
-    $IncidentWindows += [PSCustomObject]@{
-
-        IncidentType = "UnexpectedShutdown"
-
-        AnchorTime  = $AnchorTime
-        WindowStart = $WindowStart
-        WindowEnd   = $WindowEnd
-
-        EventCount = @(
-            $WindowEvents
-        ).Count
-
-        Events = @(
-            $WindowEvents
-        )
-    }
-}
+$IncidentWindows = `
+    Get-HalonIncidentWindows `
+        -Timeline $Timeline `
+        -IncidentAnchors $IncidentAnchors
 
 
 # ---------------------------------------------
