@@ -5,34 +5,36 @@ $ErrorActionPreference = "Stop"
 # ---------------------------------------------
 
 . "$PSScriptRoot\core\Halon.Common.ps1"
-
+# Collectors
 . "$PSScriptRoot\collectors\Halon.HostCollector.ps1"
 . "$PSScriptRoot\collectors\Halon.EventCollector.ps1"
 . "$PSScriptRoot\collectors\Halon.IdentityCollector.ps1"
 . "$PSScriptRoot\collectors\Halon.SessionCollector.ps1"
 . "$PSScriptRoot\collectors\Halon.ProcessCollector.ps1"
-
+# Normalizers
 . "$PSScriptRoot\normalizers\Halon.EventNormalizer.ps1"
 . "$PSScriptRoot\normalizers\Halon.IdentityNormalizer.ps1"
 . "$PSScriptRoot\normalizers\Halon.SessionNormalizer.ps1"
 . "$PSScriptRoot\normalizers\Halon.ProcessNormalizer.ps1"
-
+# Reconstructors
 . "$PSScriptRoot\reconstructors\Halon.IdentitySessionReconstructor.ps1"
 . "$PSScriptRoot\reconstructors\Halon.WindowsSessionReconstructor.ps1"
 . "$PSScriptRoot\reconstructors\Halon.TimelineReconstructor.ps1"
 . "$PSScriptRoot\reconstructors\Halon.IncidentReconstructor.ps1"
-
+. "$PSScriptRoot\reconstructors\Halon.ProcessTreeReconstructor.ps1"
+# Correlators
 . "$PSScriptRoot\correlators\Halon.ProcessLogonCorrelator.ps1"
 . "$PSScriptRoot\correlators\Halon.EventProcessCorrelator.ps1"
 . "$PSScriptRoot\correlators\Halon.IncidentIdentityCorrelator.ps1"
 . "$PSScriptRoot\correlators\Halon.IncidentSessionCorrelator.ps1"
-
+. "$PSScriptRoot\correlators\Halon.ProcessIdentitySessionCorrelator.ps1"
+# Builder
 . "$PSScriptRoot\builders\Halon.SummaryBuilder.ps1"
 . "$PSScriptRoot\builders\Halon.ManifestBuilder.ps1"
 
 . "$PSScriptRoot\instrumentation\Halon.Performance.ps1"
+# Exporter
 . "$PSScriptRoot\exporters\Halon.EvidenceExporter.ps1"
-
 . "$PSScriptRoot\exporters\Halon.JsonExporter.ps1"
 
 # ---------------------------------------------
@@ -182,10 +184,6 @@ $ProcessCollection = `
 $ProcessCreationEventsRaw = `
     $ProcessCollection.Events
 
-
-
-
-
 Complete-HalonStageTimer `
     -Stage "Process.Collection" `
     -Stopwatch $StageTimer `
@@ -209,6 +207,41 @@ Complete-HalonStageTimer `
     -Metrics $PerformanceMetrics `
     -ItemCount @($ProcessCreationEvents).Count
 
+# ---------------------------------------------
+# PROCESS TREE RECONSTRUCTION
+# ---------------------------------------------
+
+$StageTimer = Start-HalonStageTimer
+
+
+$ProcessTree = `
+    Get-HalonProcessTree `
+        -ProcessCreationEvents $ProcessCreationEvents
+
+
+Complete-HalonStageTimer `
+    -Stage "Process.TreeReconstruction" `
+    -Stopwatch $StageTimer `
+    -Metrics $PerformanceMetrics `
+    -ItemCount @($ProcessTree).Count
+
+# ---------------------------------------------
+# PROCESS LINEAGE RECONSTRUCTION
+# ---------------------------------------------
+
+$StageTimer = Start-HalonStageTimer
+
+
+$ProcessLineages = `
+    Get-HalonProcessLineages `
+        -ProcessTree $ProcessTree
+
+
+Complete-HalonStageTimer `
+    -Stage "Process.LineageReconstruction" `
+    -Stopwatch $StageTimer `
+    -Metrics $PerformanceMetrics `
+    -ItemCount @($ProcessLineages).Count
 
 # ---------------------------------------------
 # WRITE PROCESS CREATION EVIDENCE
@@ -223,6 +256,20 @@ Write-HalonJsonArray `
     -InputObject $ProcessCreationEventExport `
     -Path (Join-Path $RunDirectory "process-events.json") `
     -Depth 6
+
+# ---------------------------------------------
+# WRITE PROCESS LINEAGE EVIDENCE
+# ---------------------------------------------
+
+$ProcessLineageExport = @(
+    ConvertTo-HalonProcessLineageExport `
+        -ProcessLineages $ProcessLineages
+)
+
+Write-HalonJsonArray `
+    -InputObject $ProcessLineageExport `
+    -Path (Join-Path $RunDirectory "process-lineage.json") `
+    -Depth 8
 
 
 # ---------------------------------------------
@@ -430,6 +477,44 @@ Complete-HalonStageTimer `
     -Stopwatch $StageTimer `
     -Metrics $PerformanceMetrics `
     -ItemCount @($ProcessLogonContexts).Count
+
+# ---------------------------------------------
+# PROCESS EXECUTION CONTEXT
+# ---------------------------------------------
+
+$StageTimer = Start-HalonStageTimer
+
+
+$ProcessExecutionContexts = `
+    Get-HalonProcessExecutionContexts `
+        -ProcessLineages $ProcessLineages `
+        -ProcessLogonContexts $ProcessLogonContexts `
+        -WindowsSessions $WindowsSessions
+
+
+Complete-HalonStageTimer `
+    -Stage "Correlation.ProcessIdentitySession" `
+    -Stopwatch $StageTimer `
+    -Metrics $PerformanceMetrics `
+    -ItemCount @($ProcessExecutionContexts).Count
+
+# ---------------------------------------------
+# WRITE PROCESS EXECUTION CONTEXT
+# ---------------------------------------------
+
+$ProcessExecutionContextExport = @(
+    ConvertTo-HalonProcessExecutionContextExport `
+        -ProcessExecutionContexts $ProcessExecutionContexts
+)
+
+Write-HalonJsonArray `
+    -InputObject $ProcessExecutionContextExport `
+    -Path (
+        Join-Path `
+            $RunDirectory `
+            "process-execution-contexts.json"
+    ) `
+    -Depth 10
 # ---------------------------------------------
 # WRITE PROCESS / LOGON CONTEXT
 # ---------------------------------------------

@@ -646,3 +646,296 @@ function ConvertTo-HalonIncidentExport {
             }
     )
 }
+
+function ConvertTo-HalonProcessLineageExport {
+
+    param (
+        $ProcessLineages
+    )
+
+
+    return @(
+        $ProcessLineages |
+            ForEach-Object {
+
+                $ProcessLineage = $_
+
+
+                $ExportLineage = @(
+                    $ProcessLineage.Lineage |
+                        ForEach-Object {
+
+                            [PSCustomObject]@{
+
+                                Depth = `
+                                    $_.Depth
+
+
+                                ProcessTime = `
+                                    ConvertTo-HalonDateString `
+                                        -Value $_.ProcessTime
+
+
+                                ProcessId = `
+                                    $_.ProcessId
+
+                                ProcessName = `
+                                    $_.ProcessName
+
+                                SecurityRecordId = `
+                                    $_.SecurityRecordId
+
+
+                                SubjectIdentity = `
+                                    $_.SubjectIdentity
+
+                                SubjectUserSid = `
+                                    $_.SubjectUserSid
+
+                                SubjectLogonId = `
+                                    $_.SubjectLogonId
+
+
+                                ParentProcessFound = `
+                                    $_.ParentProcessFound
+
+                                EvidenceBasisToParent = `
+                                    $_.EvidenceBasisToParent
+                            }
+                        }
+                )
+
+
+                [PSCustomObject]@{
+
+                    ProcessTime = `
+                        ConvertTo-HalonDateString `
+                            -Value $ProcessLineage.ProcessTime
+
+
+                    ProcessId = `
+                        $ProcessLineage.ProcessId
+
+                    ProcessName = `
+                        $ProcessLineage.ProcessName
+
+                    ProcessSecurityRecordId = `
+                        $ProcessLineage.ProcessSecurityRecordId
+
+
+                    LineageNodeCount = `
+                        $ProcessLineage.LineageNodeCount
+
+                    AncestorCount = `
+                        $ProcessLineage.AncestorCount
+
+
+                    TerminationReason = `
+                        $ProcessLineage.TerminationReason
+
+
+                    Lineage = `
+                        $ExportLineage
+                }
+            }
+    )
+}
+
+function ConvertTo-HalonProcessExecutionContextExport {
+
+    param (
+        $ProcessExecutionContexts
+    )
+
+    $ExecutionContextExports = `
+        [System.Collections.Generic.List[object]]::new()
+
+
+    foreach (
+        $ProcessExecutionContext in
+        @($ProcessExecutionContexts)
+    ) {
+
+        $ContextLineageExports = `
+            [System.Collections.Generic.List[object]]::new()
+
+
+        foreach (
+            $Node in
+            @($ProcessExecutionContext.ContextLineage)
+        ) {
+
+            $WindowsSessionExports = `
+                [System.Collections.Generic.List[object]]::new()
+
+
+            foreach (
+                $Session in
+                @($Node.WindowsSessionMatches)
+            ) {
+
+                $WindowsSessionExports.Add(
+                    [PSCustomObject]@{
+
+                        User = `
+                            $Session.User
+
+                        SessionId = `
+                            $Session.SessionId
+
+                        SourceAddress = `
+                            $Session.SourceAddress
+
+
+                        SessionStart = `
+                            ConvertTo-HalonDateString `
+                                -Value $Session.SessionStart
+
+
+                        SessionEnd = `
+                            ConvertTo-HalonDateString `
+                                -Value $Session.SessionEnd
+
+
+                        State = `
+                            $Session.State
+
+
+                        LogonRecordId = `
+                            $Session.LogonRecordId
+
+                        LogoffRecordId = `
+                            $Session.LogoffRecordId
+
+
+                        SecondsFromSessionStartToProcess = `
+                            $Session.SecondsFromSessionStartToProcess
+
+
+                        SecondsFromSecurityLogonToSessionStart = `
+                            $Session.SecondsFromSecurityLogonToSessionStart
+                    }
+                )
+            }
+
+
+            $ContextLineageExports.Add(
+                [PSCustomObject]@{
+
+                    Depth = `
+                        $Node.Depth
+
+
+                    ProcessTime = `
+                        ConvertTo-HalonDateString `
+                            -Value $Node.ProcessTime
+
+
+                    ProcessId = `
+                        $Node.ProcessId
+
+                    ProcessName = `
+                        $Node.ProcessName
+
+                    SecurityRecordId = `
+                        $Node.SecurityRecordId
+
+
+                    SubjectIdentity = `
+                        $Node.SubjectIdentity
+
+                    SubjectUserSid = `
+                        $Node.SubjectUserSid
+
+                    SubjectLogonId = `
+                        $Node.SubjectLogonId
+
+
+                    SecurityLogonContextFound = `
+                        $Node.SecurityLogonContextFound
+
+
+                    SecurityLogonIdentity = `
+                        $Node.SecurityLogonIdentity
+
+                    SecurityLogonUserSid = `
+                        $Node.SecurityLogonUserSid
+
+                    SecurityLogonType = `
+                        $Node.SecurityLogonType
+
+
+                    SecurityLogonTime = `
+                        ConvertTo-HalonDateString `
+                            -Value $Node.SecurityLogonTime
+
+
+                    SecurityLogonRecordId = `
+                        $Node.SecurityLogonRecordId
+
+
+                    SecurityLogonEvidenceBasis = `
+                        $Node.SecurityLogonEvidenceBasis
+
+
+                    WindowsSessionMatchCount = `
+                        $Node.WindowsSessionMatchCount
+
+
+                    WindowsSessionEvidenceBasis = `
+                        $Node.WindowsSessionEvidenceBasis
+
+
+                    WindowsSessionMatches = `
+                        $WindowsSessionExports.ToArray()
+
+
+                    ParentProcessFound = `
+                        $Node.ParentProcessFound
+
+
+                    EvidenceBasisToParent = `
+                        $Node.EvidenceBasisToParent
+                }
+            )
+        }
+
+
+        $ExecutionContextExports.Add(
+            [PSCustomObject]@{
+
+                ProcessTime = `
+                    ConvertTo-HalonDateString `
+                        -Value $ProcessExecutionContext.ProcessTime
+
+
+                ProcessId = `
+                    $ProcessExecutionContext.ProcessId
+
+                ProcessName = `
+                    $ProcessExecutionContext.ProcessName
+
+                ProcessSecurityRecordId = `
+                    $ProcessExecutionContext.ProcessSecurityRecordId
+
+
+                LineageNodeCount = `
+                    $ProcessExecutionContext.LineageNodeCount
+
+                AncestorCount = `
+                    $ProcessExecutionContext.AncestorCount
+
+
+                TerminationReason = `
+                    $ProcessExecutionContext.TerminationReason
+
+
+                ContextLineage = `
+                    $ContextLineageExports.ToArray()
+            }
+        )
+    }
+
+
+    return $ExecutionContextExports.ToArray()
+}
