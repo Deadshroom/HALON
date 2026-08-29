@@ -264,7 +264,16 @@ function Get-HalonEventProcessCorrelations {
 
                     $null
                 }
+                HistoricalProcessSecurityRecordId = if (
+                    $ProcessMatchFound
+                ) {
 
+                    $MatchingProcess.ProcessSecurityRecordId
+                }
+                else {
+
+                    $null
+                }
 
                 ParentProcessName = if (
                     $ProcessMatchFound

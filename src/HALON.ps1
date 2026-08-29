@@ -28,6 +28,7 @@ $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\correlators\Halon.IncidentIdentityCorrelator.ps1"
 . "$PSScriptRoot\correlators\Halon.IncidentSessionCorrelator.ps1"
 . "$PSScriptRoot\correlators\Halon.ProcessIdentitySessionCorrelator.ps1"
+. "$PSScriptRoot\correlators\Halon.EventExecutionContextCorrelator.ps1"
 # Builder
 . "$PSScriptRoot\builders\Halon.SummaryBuilder.ps1"
 . "$PSScriptRoot\builders\Halon.ManifestBuilder.ps1"
@@ -568,278 +569,26 @@ Complete-HalonStageTimer `
     -Stopwatch $StageTimer `
     -Metrics $PerformanceMetrics `
     -ItemCount @($EventProcessCorrelations).Count
+
 # ---------------------------------------------
-# EVENT / HISTORICAL PROCESS CORRELATION
+# EVENT EXECUTION CONTEXT
 # ---------------------------------------------
+
 $StageTimer = Start-HalonStageTimer
-Write-Host "Correlating events with historical processes..."
 
-$EventProcessCorrelations = @()
 
+$EventExecutionContexts = `
+    Get-HalonEventExecutionContexts `
+        -EventProcessCorrelations $EventProcessCorrelations `
+        -ProcessExecutionContexts $ProcessExecutionContexts
 
-foreach ($Reference in $EventProcessReferences) {
 
-    $EventTime = [datetime]$Reference.EventTime
-
-
-    $PossibleMatches = $ProcessLogonContexts |
-        Where-Object {
-
-            [datetime]$_.ProcessTime -le $EventTime -and
-
-            $_.ProcessId -eq `
-                $Reference.ReferencedProcessId
-        }
-
-
-    # -----------------------------------------
-    # Require process-name/path agreement
-    # whenever the event supplied one.
-    # -----------------------------------------
-
-    if (
-        -not [string]::IsNullOrWhiteSpace(
-            $Reference.ReferencedProcessName
-        )
-    ) {
-
-        $PossibleMatches = $PossibleMatches |
-            Where-Object {
-
-                $HistoricalName = `
-                    [System.IO.Path]::GetFileName(
-                        $_.ProcessName
-                    )
-
-                $HistoricalName -ieq `
-                    $Reference.ReferencedProcessName
-            }
-    }
-
-
-    # PID reuse is possible.
-    # The most recent compatible process creation
-    # before the event is the relevant historical
-    # process record.
-
-    $MatchingProcess = $PossibleMatches |
-        Sort-Object ProcessTime -Descending |
-        Select-Object -First 1
-
-
-    if ($null -ne $MatchingProcess) {
-
-        $ProcessMatchFound = $true
-
-        $ProcessCreated = `
-            $MatchingProcess.ProcessTime
-
-        $ProcessAgeSeconds = [math]::Round(
-            (
-                $EventTime -
-                [datetime]$MatchingProcess.ProcessTime
-            ).TotalSeconds,
-            3
-        )
-
-
-        if (
-            -not [string]::IsNullOrWhiteSpace(
-                $Reference.ReferencedProcessName
-            )
-        ) {
-
-            $MatchBasis = "ProcessIdAndProcessName"
-
-        }
-        else {
-
-            $MatchBasis = "ProcessIdOnly"
-        }
-    }
-    else {
-
-        $ProcessMatchFound = $false
-        $ProcessCreated    = $null
-        $ProcessAgeSeconds = $null
-        $MatchBasis        = "NoHistoricalProcessMatch"
-    }
-
-
-    $EventProcessCorrelations += [PSCustomObject]@{
-
-        # EVENT SIDE
-
-        EventTime     = $Reference.EventTime
-        EventRecordId = $Reference.EventRecordId
-
-        EventProvider = $Reference.EventProvider
-        EventID       = $Reference.EventID
-        EventLevel    = $Reference.EventLevel
-
-
-        ReferencedProcessId = `
-            $Reference.ReferencedProcessId
-
-        ReferencedProcessName = `
-            $Reference.ReferencedProcessName
-
-        ReferencedProcessPath = `
-            $Reference.ReferencedProcessPath
-
-
-        # CORRELATION
-
-        HistoricalProcessFound = `
-            $ProcessMatchFound
-
-        MatchBasis = `
-            $MatchBasis
-
-        ProcessAgeAtEventSeconds = `
-            $ProcessAgeSeconds
-
-
-        # HISTORICAL PROCESS SIDE
-
-        HistoricalProcessCreated = if (
-            $ProcessMatchFound
-        ) {
-
-            $MatchingProcess.ProcessTime
-
-        }
-        else {
-
-            $null
-        }
-
-
-        HistoricalProcessName = if (
-            $ProcessMatchFound
-        ) {
-
-            $MatchingProcess.ProcessName
-
-        }
-        else {
-
-            $null
-        }
-
-
-        ParentProcessName = if (
-            $ProcessMatchFound
-        ) {
-
-            $MatchingProcess.ParentProcessName
-
-        }
-        else {
-
-            $null
-        }
-
-
-        ParentProcessId = if (
-            $ProcessMatchFound
-        ) {
-
-            $MatchingProcess.ParentProcessId
-
-        }
-        else {
-
-            $null
-        }
-
-
-        # IDENTITY SIDE
-
-        SubjectIdentity = if (
-            $ProcessMatchFound
-        ) {
-
-            $MatchingProcess.SubjectIdentity
-
-        }
-        else {
-
-            $null
-        }
-
-
-        SubjectUserSid = if (
-            $ProcessMatchFound
-        ) {
-
-            $MatchingProcess.SubjectUserSid
-
-        }
-        else {
-
-            $null
-        }
-
-
-        SubjectLogonId = if (
-            $ProcessMatchFound
-        ) {
-
-            $MatchingProcess.SubjectLogonId
-
-        }
-        else {
-
-            $null
-        }
-
-
-        LogonContextFound = if (
-            $ProcessMatchFound
-        ) {
-
-            $MatchingProcess.LogonContextFound
-
-        }
-        else {
-
-            $false
-        }
-
-
-        LogonIdentity = if (
-            $ProcessMatchFound
-        ) {
-
-            $MatchingProcess.LogonIdentity
-
-        }
-        else {
-
-            $null
-        }
-
-
-        EvidenceBasis = if (
-            $ProcessMatchFound
-        ) {
-
-            "WindowsEventProcessReference+" +
-            "Security4688"
-
-        }
-        else {
-
-            "WindowsEventProcessReferenceOnly"
-        }
-    }
-}
 Complete-HalonStageTimer `
-    -Stage "Correlation.EventToProcess" `
+    -Stage "Correlation.EventExecutionContext" `
     -Stopwatch $StageTimer `
     -Metrics $PerformanceMetrics `
-    -ItemCount @($EventProcessCorrelations).Count
+    -ItemCount @($EventExecutionContexts).Count
+
 # ---------------------------------------------
 # WRITE EVENT / PROCESS CORRELATION
 # ---------------------------------------------
@@ -958,7 +707,8 @@ Write-HalonJsonArray `
 $IncidentWindows = `
     Get-HalonIncidentWindows `
         -Timeline $Timeline `
-        -IncidentAnchors $IncidentAnchors
+        -IncidentAnchors $IncidentAnchors `
+        -CanonicalEvents $Events
 
 
 # ---------------------------------------------
