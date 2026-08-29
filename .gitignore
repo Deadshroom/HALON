@@ -23,3 +23,26 @@ Desktop.ini
 # Editor / temporary files
 *.tmp
 *.bak
+
+# Generated benchmark results
+benchmarks/results/
+
+# Python environment
+.venv/
+__pycache__/
+*.pyc
+
+# Local models
+models/
+
+# HALON generated evidence
+output/
+
+# Generated reasoning results
+tests/reasoning-output/
+
+# Compiled test binaries
+tests/crash-probe/*.exe
+tests/crash-probe/*.pdb
+tests/crash-probe/bin/
+tests/crash-probe/obj/
