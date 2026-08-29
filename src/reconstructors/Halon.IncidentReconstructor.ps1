@@ -183,13 +183,204 @@ function Get-HalonIncidentContexts {
     return $IncidentContexts.ToArray()
 }
 
+function Get-HalonIncidentDiagnosticArtifacts {
+
+    param (
+        $IncidentEvents,
+
+        $CanonicalEventByRecordId
+    )
+
+
+    $DiagnosticArtifacts = `
+        [System.Collections.Generic.List[object]]::new()
+
+
+    foreach ($IncidentEvent in @($IncidentEvents)) {
+
+        # -------------------------------------
+        # CURRENT PROVEN CAPABILITY
+        #
+        # Microsoft-Windows-WER-SystemErrorReporting
+        # Event 1001
+        #
+        # param1 = raw BugCheck tuple
+        # param2 = dump path
+        # param3 = Windows report ID
+        # -------------------------------------
+
+        if (
+            $IncidentEvent.EventID -ne 1001 -or
+            $IncidentEvent.Provider -ne
+                "Microsoft-Windows-WER-SystemErrorReporting"
+        ) {
+
+            continue
+        }
+
+
+        if ($null -eq $IncidentEvent.RecordId) {
+            continue
+        }
+
+
+        $RecordKey = `
+            [string]$IncidentEvent.RecordId
+
+
+        if (
+            -not $CanonicalEventByRecordId.ContainsKey(
+                $RecordKey
+            )
+        ) {
+
+            continue
+        }
+
+
+        $SourceEvent = `
+            $CanonicalEventByRecordId[
+                $RecordKey
+            ]
+
+
+        $StructuredData = `
+            $SourceEvent.StructuredEventData
+
+
+        if ($null -eq $StructuredData) {
+            continue
+        }
+
+
+        $BugCheckRaw = `
+            $StructuredData.param1
+
+        $DumpPath = `
+            $StructuredData.param2
+
+        $ReportId = `
+            $StructuredData.param3
+
+
+        if (
+            [string]::IsNullOrWhiteSpace(
+                [string]$DumpPath
+            )
+        ) {
+
+            continue
+        }
+
+
+        $ArtifactType = `
+            "UnknownDiagnosticArtifact"
+
+
+        if (
+            [System.IO.Path]::GetExtension(
+                [string]$DumpPath
+            ) -ieq ".dmp"
+        ) {
+
+            $ArtifactType = `
+                "WindowsMinidump"
+        }
+
+
+        $OccurrenceTime = $null
+
+        if ($null -ne $SourceEvent.OccurrenceTime) {
+
+            $OccurrenceTime = (
+                [datetime]$SourceEvent.OccurrenceTime
+            ).ToString(
+                "MM/dd/yyyy HH:mm:ss"
+            )
+        }
+
+
+        $LoggedTime = $null
+
+        if ($null -ne $SourceEvent.LoggedTime) {
+
+            $LoggedTime = (
+                [datetime]$SourceEvent.LoggedTime
+            ).ToString(
+                "MM/dd/yyyy HH:mm:ss"
+            )
+        }
+
+
+        $DiagnosticArtifacts.Add(
+            [PSCustomObject]@{
+
+                Relationship = `
+                    "ProducedDiagnosticArtifact"
+
+
+                ArtifactType = `
+                    $ArtifactType
+
+                ArtifactPath = `
+                    [string]$DumpPath
+
+                ReportId = `
+                    [string]$ReportId
+
+                BugCheckRaw = `
+                    [string]$BugCheckRaw
+
+
+                EvidenceSource = `
+                    [PSCustomObject]@{
+
+                        RecordId = `
+                            $SourceEvent.RecordId
+
+                        EventID = `
+                            $SourceEvent.EventID
+
+                        Provider = `
+                            $SourceEvent.Provider
+
+                        OccurrenceTime = `
+                            $OccurrenceTime
+
+                        LoggedTime = `
+                            $LoggedTime
+                    }
+
+
+                IncidentAssociation = `
+                    [PSCustomObject]@{
+
+                        RecordId = `
+                            $IncidentEvent.RecordId
+
+                        EvidenceBasis = `
+                            "IncidentWindowRecordIdMatch"
+                    }
+
+
+                EvidenceBasis = `
+                    "CanonicalEventStructuredData"
+            }
+        )
+    }
+
+
+    return $DiagnosticArtifacts.ToArray()
+}
 
 function Get-HalonIncidentWindows {
 
     param (
         $Timeline,
 
-        $IncidentAnchors
+        $IncidentAnchors,
+
+        $CanonicalEvents
     )
 
 
@@ -199,6 +390,30 @@ function Get-HalonIncidentWindows {
     $IncidentWindows = `
         [System.Collections.Generic.List[object]]::new()
 
+# -----------------------------------------
+# CANONICAL EVENT RECORD INDEX
+#
+# Stable RecordId bridge back to complete
+# normalized event evidence.
+# -----------------------------------------
+
+    $CanonicalEventByRecordId = @{}
+
+
+    foreach (
+        $CanonicalEvent in
+        @($CanonicalEvents)
+    ) {
+
+        if ($null -eq $CanonicalEvent.RecordId) {
+            continue
+        }
+
+
+        $CanonicalEventByRecordId[
+            [string]$CanonicalEvent.RecordId
+        ] = $CanonicalEvent
+    }
 
     foreach ($Anchor in $IncidentAnchors) {
 
@@ -340,7 +555,9 @@ function Get-HalonIncidentWindows {
 
                         Provider = `
                             $_.Provider
-
+                        
+                            RecordId = `
+                            $_.RecordId
 
                         LifecycleContext = `
                             $LifecycleContext
@@ -376,6 +593,15 @@ function Get-HalonIncidentWindows {
                 }
         )
 
+# -------------------------------------
+# DIAGNOSTIC ARTIFACT RECONSTRUCTION
+# -------------------------------------
+
+        $DiagnosticArtifacts = `
+            Get-HalonIncidentDiagnosticArtifacts `
+                -IncidentEvents $WindowEventsBase `
+                -CanonicalEventByRecordId `
+                    $CanonicalEventByRecordId
 
         $IncidentWindows.Add(
             [PSCustomObject]@{
@@ -397,6 +623,16 @@ function Get-HalonIncidentWindows {
 
                 Events = `
                     $WindowEvents
+                     
+                DiagnosticArtifactCount = `
+                    @(
+                        $DiagnosticArtifacts
+                    ).Count
+
+                DiagnosticArtifacts = `
+                    @(
+                        $DiagnosticArtifacts
+                    )
             }
         )
     }

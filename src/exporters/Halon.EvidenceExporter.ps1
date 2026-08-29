@@ -425,6 +425,9 @@ function ConvertTo-HalonEventProcessCorrelationExport {
                     HistoricalProcessName = `
                         $_.HistoricalProcessName
 
+                    HistoricalProcessSecurityRecordId = `
+                        $_.HistoricalProcessSecurityRecordId
+                        
                     ParentProcessId = `
                         $_.ParentProcessId
 
@@ -594,6 +597,9 @@ function ConvertTo-HalonIncidentExport {
 
                                 Provider = `
                                     $_.Provider
+                                
+                                RecordId = `
+                                    $_.RecordId
 
                                 LifecycleContext = `
                                     $_.LifecycleContext
@@ -616,6 +622,74 @@ function ConvertTo-HalonIncidentExport {
                         }
                 )
 
+# ---------------------------------------------
+# DIAGNOSTIC ARTIFACT EXPORT
+# ---------------------------------------------
+
+                $ExportDiagnosticArtifacts = @(
+                    @($Incident.DiagnosticArtifacts) |
+                        ForEach-Object {
+
+                            $Artifact = $_
+
+
+                            [PSCustomObject]@{
+
+                                Relationship = `
+                                    $Artifact.Relationship
+
+
+                                ArtifactType = `
+                                    $Artifact.ArtifactType
+
+                                ArtifactPath = `
+                                    $Artifact.ArtifactPath
+
+                                ReportId = `
+                                    $Artifact.ReportId
+
+                                BugCheckRaw = `
+                                    $Artifact.BugCheckRaw
+
+
+                                EvidenceSource = `
+                                    [PSCustomObject]@{
+
+                                        RecordId = `
+                                            $Artifact.EvidenceSource.RecordId
+
+                                        EventID = `
+                                            $Artifact.EvidenceSource.EventID
+
+                                        Provider = `
+                                            $Artifact.EvidenceSource.Provider
+
+                                        OccurrenceTime = `
+                                            ConvertTo-HalonDateString `
+                                                -Value $Artifact.EvidenceSource.OccurrenceTime
+
+                                        LoggedTime = `
+                                            ConvertTo-HalonDateString `
+                                                -Value $Artifact.EvidenceSource.LoggedTime
+                                    }
+
+
+                                IncidentAssociation = `
+                                    [PSCustomObject]@{
+
+                                        RecordId = `
+                                            $Artifact.IncidentAssociation.RecordId
+
+                                        EvidenceBasis = `
+                                            $Artifact.IncidentAssociation.EvidenceBasis
+                                    }
+
+
+                                EvidenceBasis = `
+                                    $Artifact.EvidenceBasis
+                            }
+                        }
+                )
 
                 [PSCustomObject]@{
 
@@ -642,6 +716,14 @@ function ConvertTo-HalonIncidentExport {
 
                     Events = `
                         $ExportEvents
+                    
+                    DiagnosticArtifactCount = `
+                        @(
+                            $ExportDiagnosticArtifacts
+                        ).Count
+
+                    DiagnosticArtifacts = `
+                        $ExportDiagnosticArtifacts
                 }
             }
     )
