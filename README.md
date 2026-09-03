@@ -1,304 +1,184 @@
-# HALON
+HALON
 
-HALON is a portable Windows diagnostic and evidence collection tool designed to reconstruct system activity around incidents without modifying the system being investigated.
+HALON is a portable Windows diagnostic, evidence reconstruction, knowledge retrieval, and reasoning system designed to help answer a simple question:
 
-The project focuses on collecting, normalizing, and correlating Windows evidence that is often difficult for system administrators to reconstruct manually.
+What actually happened on this Windows machine, and what does the available evidence support?
 
-## Current Capabilities
+HALON collects Windows telemetry, reconstructs deterministic relationships, packages the resulting evidence, indexes it locally for semantic retrieval, and allows a local reasoning model to answer natural-language questions over that evidence.
 
-HALON currently collects and reconstructs:
+The project is intentionally built around a strict separation between:
 
-- Windows system information
-- Disk information
-- Service state
-- Windows System and Application event evidence
-- Critical, error, warning, lifecycle, hardware, storage, and application events
-- Windows boot and event chronology
-- Security logon and logoff events
-- Windows interactive session lifecycle
-- Historical process creation events using Security Event 4688
-- Process parent/child information
-- Process execution security context
-- Process-to-logon-context correlation
-- Incident windows and surrounding evidence
-- Session-to-incident correlation
-- Event-to-process correlation infrastructure
+Evidence
+    ↓
+Knowledge
+    ↓
+Reasoning
 
-## Evidence Philosophy
+The goal is not to pass raw logs directly into an LLM and hope for a plausible explanation.
+
+The goal is to preserve a defensible chain from machine evidence to retrieved facts to model reasoning.
+
+Current Architecture
+
+HALON currently operates as a connected local pipeline:
+
+Windows
+   ↓
+HALON.ps1
+Evidence Engine
+   ↓
+HALON.py
+Evidence Packager
+   ↓
+evidence-payload-v1.json
+   ↓
+Halon.KnowledgeEngine.py
+Knowledge Engine
+   ↓
+Local LanceDB evidence store
+   ↑
+Halon.ReasoningEngine.py
+Reasoning Engine
+   ↑
+Human question
+   ↓
+Qwen3 local model
+   ↓
+Grounded operator answer
+
+The current PoC has been tested end to end using fresh Windows evidence collected from the host, packaged into a canonical payload, ingested into the Knowledge Engine, retrieved through natural-language queries, and reasoned over by a local Qwen3 model running with GPU offload.
+
+Evidence Engine
+
+The Evidence Engine is responsible for collecting, normalizing, reconstructing, correlating, and exporting deterministic Windows evidence.
+
+The main entry point is:
+
+src/HALON.ps1
+
+HALON currently collects or reconstructs:
+
+Windows system information
+
+Disk information
+
+Service state
+
+Windows System and Application event evidence
+
+Critical, error, warning, lifecycle, hardware, storage, and application events
+
+Windows boot and event chronology
+
+Security logon and logoff events
+
+Current Windows session state
+
+Windows interactive session lifecycle
+
+Historical process creation events using Security Event 4688
+
+Process trees
+
+Process lineages
+
+Process execution security context
+
+Process-to-logon-context relationships
+
+Process-to-Windows-session relationships
+
+Event-to-process relationships when supported by the underlying event evidence
+
+Incident windows and surrounding evidence
+
+Session-to-incident relationships
+
+Identity-to-incident relationships
+
+Evidence summaries
+
+Event recurrence summaries
+
+Collection capability information
+
+Agent performance diagnostics
+
+The Evidence Engine does not assign root cause, intent, responsibility, blame, or inferred relevance.
+
+Evidence Philosophy
 
 HALON separates observed evidence from interpretation.
 
-The Evidence Engine is intended to preserve and correlate objective Windows telemetry without assigning root cause, responsibility, or inferred relevance.
+The Evidence Engine preserves what Windows recorded and what HALON can deterministically establish from that evidence.
 
 For example:
 
-- A process creation event establishes that Windows recorded a process being created.
-- A matching Logon ID can associate that process with a Windows security context.
-- A matching SID can establish continuity when Windows represents the same account differently across event sources.
-- A session interval can establish whether a Windows session existed at a particular time.
-- A process parent can establish the recorded process relationship between two executions.
-- Temporal proximity alone does not establish causality.
+A process creation event establishes that Windows recorded a process being created.
 
-HALON preserves evidence gaps explicitly rather than treating missing evidence as proof that an event did not occur.
+A matching Logon ID can associate that process with a Windows security context.
+
+A matching SID can establish identity continuity across different event representations.
+
+A session interval can establish that a Windows session existed at a particular time.
+
+A parent process record can establish a recorded process relationship.
+
+A deterministic event-to-process correlation can establish a relationship supported by the available identifiers and timing.
+
+Temporal proximity alone does not establish causality.
+
+Correlation does not establish human intent.
+
+HALON also preserves evidence gaps explicitly.
 
 For example:
 
-```text
 []
-```
 
-means that HALON successfully evaluated an evidence source or correlation and found no matching records.
+means HALON successfully evaluated that evidence source or relationship and found no matching records.
 
-This is different from evidence being unavailable because of permissions, disabled auditing, missing logs, or insufficient historical coverage.
+That is different from:
 
-## Current Architecture
-
-The current implementation is a PowerShell prototype located at:
-
-```text
-src/HALON.ps1
-```
-
-The prototype is intentionally being developed as a working Evidence Engine before being modularized.
-
-Generated evidence is written beneath:
-
-```text
-output/
-```
-
-The `output` directory is excluded from source control because generated diagnostic evidence may contain:
-
-- Usernames
-- Security identifiers (SIDs)
-- Process execution history
-- Machine information
-- Windows event data
-- Session information
-- Other potentially sensitive system evidence
-
-## Evidence Sources
-
-HALON currently uses several native Windows evidence sources.
-
-### Windows Event Logs
-
-HALON collects diagnostic and lifecycle events from sources including:
-
-- System
-- Application
-- Security
-- Windows Terminal Services Local Session Manager
-
-### Security Events
-
-HALON currently uses Security events including:
-
-- `4624` - Successful logon
-- `4634` - Logoff
-- `4647` - User initiated logoff
-- `4688` - Process creation
-- `4778` - Session reconnect
-- `4779` - Session disconnect
-
-### Windows Session Events
-
-HALON uses the following events from:
-
-```text
-Microsoft-Windows-TerminalServices-LocalSessionManager/Operational
-```
-
-including:
-
-- `21` - Session logon
-- `23` - Session logoff
-- `24` - Session disconnect
-- `25` - Session reconnect
-
-### Lifecycle Events
-
-HALON currently recognizes Windows lifecycle events including:
-
-- `41` - Kernel-Power unexpected restart
-- `1001` - Bugcheck reporting
-- `1074` - Planned shutdown or restart
-- `6005` - Event Log service started
-- `6006` - Event Log service stopped
-- `6008` - Unexpected shutdown
-
-## Process Evidence
-
-When Windows Process Creation auditing is available, HALON collects Security Event `4688`.
-
-This allows HALON to preserve evidence such as:
-
-```text
-Process Creation
-    |
-    +-- Timestamp
-    +-- Process ID
-    +-- Process executable
-    +-- Parent Process ID
-    +-- Parent executable
-    +-- Subject SID
-    +-- Subject Logon ID
-    +-- Security record ID
-```
-
-HALON can then correlate the process creation event with the Security logon context associated with the same Logon ID.
-
-For example:
-
-```text
-Security 4624
-Account logon
-Logon ID: 0x60481
-        |
-        v
-Security 4688
-Process created
-Logon ID: 0x60481
-        |
-        v
-notepad++.exe
-PID: 21932
-Parent: explorer.exe
-```
-
-HALON does not interpret this as proof that a human manually launched the application.
-
-Instead, the defensible statement is:
-
-> Windows recorded the process being created under the associated security context.
-
-This distinction allows HALON to remain useful for interactive users, service accounts, scheduled tasks, automation accounts, scripts, and other execution contexts.
-
-## Identity Correlation
-
-Windows may represent the same account differently across event sources.
-
-For example:
-
-```text
-MicrosoftAccount\user@example.com
-```
-
-and:
-
-```text
-COMPUTERNAME\user
-```
-
-may represent the same underlying account.
-
-HALON preserves Windows identifiers such as:
-
-```text
-User SID
-Logon ID
-Security Record ID
-```
-
-so correlations do not have to depend entirely on display names.
-
-This allows HALON to reconstruct relationships using the identifiers Windows itself recorded.
-
-## Session Reconstruction
-
-HALON distinguishes between Security logon contexts and actual Windows desktop or terminal sessions.
-
-Security Event `4624` represents a successful logon context, but a single Windows user session may produce multiple security logons.
-
-HALON therefore also collects Windows Terminal Services session lifecycle evidence to reconstruct session intervals such as:
-
-```text
-User: WADESYSTEM\user
-Session ID: 1
-Session Start: 08/27/2026 07:31:03
-Session End: Open
-State: OpenAtCollectionEnd
-```
-
-This distinction prevents HALON from incorrectly treating every Windows security logon as a separate interactive desktop session.
-
-## Incident Reconstruction
-
-HALON currently reconstructs unexpected shutdown incidents using Windows lifecycle evidence.
-
-For each detected incident, HALON can retain:
-
-- Incident occurrence time
-- Event logging time
-- Events before the incident
-- Events after the incident
-- Relative event timing
-- Boot session context
-- Event recurrence
-- Windows session evidence
-- Security identity evidence
-- Evidence coverage limitations
-
-HALON explicitly distinguishes between:
-
-```text
-Evidence found
-Evidence not found
 Evidence unavailable
-Evidence outside the collection window
-```
 
-This prevents missing telemetry from being interpreted as proof that an activity did not occur.
+which may result from permissions, disabled auditing, missing logs, missing artifacts, insufficient historical coverage, or unsupported event schemas.
 
-## Event and Process Correlation
+HALON treats those states differently because:
 
-HALON includes infrastructure for correlating diagnostic events with historical process execution.
+No matching evidence is not the same as unavailable evidence.
 
-The intended evidence chain is:
+Evidence Collection and Packaging
 
-```text
-Application / System Event
-        |
-        v
-Referenced Process
-        |
-        v
-Historical Process Creation
-        |
-        v
-Security Logon Context
-        |
-        v
-Identity
-```
+Each HALON collection creates a dedicated run directory beneath:
 
-Process correlation is designed to account for Windows PID reuse.
+output/
 
-A PID match alone is not sufficient when stronger evidence is available.
+For example:
 
-HALON can consider evidence such as:
+output/
+└── WADESYSTEM_20260902_154217/
 
-```text
-Process ID
-+
-Process Name
-+
-Process Creation Time
-+
-Event Time
-+
-Logon ID
-```
+The run directory is the unit of evidence for that collection.
 
-to establish a stronger deterministic relationship.
+HALON.ps1 performs the collection and deterministic reconstruction stages, then passes the exact run directory to:
 
-Event-to-process correlation support is currently being expanded one Windows event schema at a time.
+src/HALON.py
 
-## Generated Evidence
+HALON does not search for or guess which output directory is the latest.
 
-A HALON run currently produces artifacts including:
+The packager validates and combines the completed artifacts into:
 
-```text
+evidence-payload-v1.json
+
+The payload preserves evidence, relationships, reconstructions, summaries, collection capabilities, provenance, metadata, relationship counts, and agent diagnostics.
+
+The exact payload path is then passed directly to the Knowledge Engine.
+
+Generated Evidence
+
+A complete HALON collection currently produces 24 canonical artifacts:
+
 system-info.json
 disks.json
 services.json
@@ -321,104 +201,489 @@ windows-sessions-at-incident.json
 
 process-evidence-capability.json
 process-events.json
+process-lineage.json
 process-logon-contexts.json
+process-execution-contexts.json
 event-process-correlations.json
-```
 
-These artifacts represent separate layers of collected, normalized, reconstructed, and correlated evidence.
+performance.json
 
-## Audit Policy
+These artifacts represent separate layers of collected, normalized, reconstructed, correlated, summarized, and provenance-aware evidence.
 
-HALON is intended to behave as an observer.
+The output/ directory is excluded from source control because generated diagnostic evidence may contain usernames, security identifiers, process execution history, machine information, Windows event data, session information, and other potentially sensitive host evidence.
 
-It does not automatically enable Windows auditing policies in order to collect additional evidence.
+Process Evidence
 
-For Process Creation auditing, HALON records both:
+When Windows Process Creation auditing is available, HALON collects Security Event 4688.
 
-```text
+This allows HALON to preserve evidence such as:
+
+Process Creation
+    |
+    +-- Timestamp
+    +-- Process ID
+    +-- Process executable
+    +-- Parent Process ID
+    +-- Parent executable
+    +-- Subject SID
+    +-- Subject Logon ID
+    +-- Security record ID
+
+HALON reconstructs process lineage from those records and can correlate the process with its Windows security context.
+
+HALON does not interpret this as proof that a human manually launched an application.
+
+The defensible statement is:
+
+Windows recorded the process being created under the associated security context.
+
+This distinction keeps HALON useful for interactive users, service accounts, automation accounts, scheduled tasks, scripts, system processes, and other unattended execution contexts.
+
+Identity and Session Reconstruction
+
+Windows may represent the same account differently across evidence sources.
+
+HALON preserves identifiers such as:
+
+User SID
+Logon ID
+Security Record ID
+Session ID
+
+so relationships do not have to depend entirely on display names.
+
+HALON also distinguishes between a Security logon context and an actual Windows interactive session.
+
+Security Event 4624 represents a successful logon context, but one interactive Windows session may generate multiple security logons.
+
+HALON therefore reconstructs Windows session intervals separately.
+
+Example:
+
+User: WADESYSTEM\hurst
+Session ID: 1
+Session Start: 09/02/2026 09:13:36
+Session End: Open
+State: OpenAtCollectionEnd
+
+This prevents HALON from incorrectly treating every Windows security logon as a separate desktop session.
+
+Incident Reconstruction
+
+HALON can reconstruct incident context around supported lifecycle evidence.
+
+For each detected incident, HALON can preserve:
+
+Incident type
+
+Incident anchor time
+
+Event logging time
+
+Events before the incident
+
+Events after the incident
+
+Relative event timing
+
+Boot-session context
+
+Event recurrence
+
+Windows-session evidence
+
+Security identity evidence
+
+Evidence coverage limitations
+
+HALON explicitly distinguishes between:
+
+Evidence found
+Evidence not found
+Evidence unavailable
+Evidence outside the collection window
+
+This prevents missing telemetry from being interpreted as proof that an activity did not occur.
+
+Event and Process Correlation
+
+HALON includes deterministic infrastructure for correlating supported Windows events with historical process execution.
+
+The evidence chain can look like:
+
+Application / System Event
+        |
+        v
+Referenced Process
+        |
+        v
+Historical Process Creation
+        |
+        v
+Security Logon Context
+        |
+        v
+Identity
+
+Process correlation is designed to account for Windows PID reuse.
+
+A PID match alone is not sufficient when stronger evidence is available.
+
+HALON can consider evidence such as:
+
+Process ID
++
+Process Name
++
+Process Creation Time
++
+Event Time
++
+Logon ID
+
+to establish a stronger relationship.
+
+Event-to-process support is expanded only where the Windows event schema provides defensible process references.
+
+Knowledge Engine
+
+The Knowledge Engine is implemented in:
+
+src/knowledge/Halon.KnowledgeEngine.py
+
+It currently has two responsibilities:
+
+1. Organize HALON evidence
+2. Retrieve relevant deterministic evidence from natural language
+
+The Knowledge Engine uses:
+
+BAAI/bge-small-en-v1.5
+
+for local semantic embeddings and:
+
+LanceDB
+
+as the local embedded vector database.
+
+No external vector service is required.
+
+HALON Evidence Families
+
+The current Knowledge Engine contains 24 searchable HALON evidence families, including:
+
+windowsSessions
+processes
+windowsEvents
+identityEvents
+currentSessions
+windowsSessionEvents
+services
+identitySessions
+system
+disks
+
+eventToProcess
+processToParent
+processToLogon
+processToWindowsSession
+
+evidenceSummary
+eventSummary
+processEvidenceCapability
+
+timeline
+processLineages
+processExecutionContexts
+
+incidents
+incidentContexts
+incidentIdentities
+windowsSessionsAtIncident
+
+Each searchable record preserves:
+
+sourceType
+family
+searchText
+metadata
+originalRecord
+embedding vector
+
+The semantic text exists to make the evidence findable.
+
+The original structured HALON record remains the factual source.
+
+Semantic retrieval finds evidence. HALON evidence establishes facts.
+
+Family Catalog
+
+HALON does not search every evidence record for every question.
+
+The Knowledge Engine maintains a semantic Family Catalog describing what each evidence family contains.
+
+A question such as:
+
+Who was logged into this machine?
+
+can first retrieve:
+
+windowsSessions
+currentSessions
+
+The Knowledge Engine then performs deeper retrieval only within those selected evidence families.
+
+Retrieval Completeness
+
+Semantic top-N retrieval is useful for finding relevant records, but a top-N result must never be mistaken for a complete enumeration.
+
+HALON therefore distinguishes between semantic retrieval and deterministic enumeration.
+
+For example:
+
+What PowerShell activity occurred on this machine?
+
+HALON can:
+
+Select the processes family
+        ↓
+Scan the complete process evidence shelf
+        ↓
+Find every exact PowerShell process match
+        ↓
+Calculate deterministic counts and aggregates
+        ↓
+Provide a bounded set of supporting records to the model
+
+In a tested collection containing 5,815 process records, HALON deterministically identified 52 PowerShell process records without sending all 52 full JSON records into the reasoning model context.
+
+This preserves the distinction between:
+
+Complete deterministic result
+
+and:
+
+Bounded model context
+
+HALON Metadata and Provenance
+
+Not everything stored in the Knowledge Engine is machine diagnostic evidence.
+
+HALON separately preserves metadata including:
+
+payloadMetadata
+sourceManifest
+artifactIndex
+relationshipSummary
+agentPerformance
+
+These records are stored as:
+
+HALON_METADATA
+
+rather than:
+
+HALON_EVIDENCE
+
+Agent performance information, for example, describes HALON execution behavior and is not treated as evidence about the investigated Windows host.
+
+Reasoning Engine
+
+The Reasoning Engine is implemented in:
+
+src/reasoning/Halon.ReasoningEngine.py
+
+The current local reasoning model is:
+
+Qwen3-8B-Q4_K_M.gguf
+
+running through llama-cpp-python with model layers offloaded to the GPU.
+
+The Reasoning Engine does not query Windows directly, perform deterministic evidence reconstruction, or search LanceDB itself.
+
+Instead:
+
+Human question
+    ↓
+Reasoning Engine
+    ↓
+Knowledge Engine
+    ↓
+Relevant HALON evidence
+    ↓
+Reasoning Engine
+    ↓
+Operator answer
+
+The current response contract is intentionally concise and operator-focused.
+
+Example:
+
+ANSWER
+The user "hurst" was logged into the machine.
+
+EVIDENCE
+- WADESYSTEM\hurst had an active Session ID 1.
+- The session started at 09/02/2026 09:13:36.
+
+HALON avoids producing unnecessary report sections when the question does not require them.
+
+Reasoning Boundaries
+
+The Reasoning Engine is instructed to:
+
+Answer the actual question first
+
+Use only supplied HALON evidence for machine-specific factual claims
+
+Ignore unrelated retrieved records
+
+Avoid assigning undocumented technical meaning
+
+Avoid inventing user intent
+
+Avoid converting correlation into causation
+
+State material evidence limitations briefly
+
+Avoid unsupported hypotheses
+
+Avoid exposing model scratch work
+
+Prefer concise operator-facing answers
+
+The intended division of responsibility is:
+
+The model decides what evidence it wants. Deterministic code decides what the evidence actually says.
+
+Current End-to-End PoC
+
+HALON has now been tested as a complete local pipeline:
+
+Windows
+   ↓
+HALON.ps1
+   ↓
+24 canonical evidence artifacts
+   ↓
+HALON.py
+   ↓
+evidence-payload-v1.json
+   ↓
+Knowledge Engine
+   ↓
+LanceDB
+   ↓
+Natural-language evidence retrieval
+   ↓
+Reasoning Engine
+   ↓
+Qwen3 GPU inference
+   ↓
+Concise grounded answer
+
+Tested questions include:
+
+What PowerShell activity occurred on this machine?
+
+Who was logged into this machine?
+
+Was process creation evidence available during this collection?
+
+The current integration regression verifies:
+
+Knowledge retrieval:       3/3
+Enumeration completeness:  2/2
+
+Regression Testing
+
+Knowledge Engine regression:
+
+cd C:\Dev\halon
+.\Test-KnowledgeEngine.ps1
+
+A complete Knowledge Engine rebuild can be tested with:
+
+.\Test-KnowledgeEngine.ps1 -ForceRebuild
+
+Knowledge → Reasoning integration:
+
+.\Test-ReasoningKnowledge.ps1
+
+Regression outputs are written beneath:
+
+output/regression/
+
+Audit Policy
+
+HALON is designed to behave as an observer.
+
+It does not automatically enable Windows auditing policies in order to create additional evidence.
+
+For Process Creation evidence, HALON records both:
+
 Current audit policy
 Historical Event 4688 availability
-```
 
-These are intentionally treated separately.
+These are intentionally separate.
 
-For example, Process Creation auditing may currently be disabled while historical `4688` records still exist within the collection window.
+HALON can use historical records without modifying the host configuration.
 
-HALON can use those historical records without modifying the host configuration.
+Authoritative Knowledge
 
-## Project Direction
+The next major Knowledge Engine capability is a separate authoritative documentation shelf.
 
-HALON is being developed toward a layered diagnostic architecture:
+The intended architecture is:
 
-```text
-Evidence Engine
-      |
-      v
-Knowledge Engine
-      |
-      v
-Reasoning Engine
-```
+KNOWLEDGE ENGINE
+│
+├── HALON_EVIDENCE
+│      What happened on this machine?
+│
+├── HALON_METADATA
+│      Where did this evidence come from?
+│
+└── AUTHORITATIVE_KNOWLEDGE
+       What does the documented Windows behavior mean?
 
-### Evidence Engine
+Authoritative knowledge will remain provenance-separated from machine evidence.
 
-Collects, normalizes, reconstructs, and correlates deterministic Windows evidence.
+Initial sources are expected to include official Microsoft documentation covering:
 
-The Evidence Engine should answer questions such as:
+Windows Event IDs
 
-```text
-What happened?
-When did it happen?
-What process was involved?
-What created that process?
-What security context executed it?
-What Windows session existed at that time?
-What evidence was available?
-What evidence was missing?
-```
+Event providers
 
-It should not independently decide why an incident happened.
+Security auditing
 
-### Knowledge Engine
+Process creation
 
-The planned Knowledge Engine will retrieve authoritative technical documentation relevant to observed evidence.
+Windows sessions
 
-The intended knowledge sources include official Microsoft Windows documentation covering areas such as:
+Services
 
-- Windows Event IDs
-- Event providers
-- Security auditing
-- Process creation
-- Windows sessions
-- Services
-- Storage
-- Hardware
-- Bugchecks
-- Windows Error Reporting
+Storage
 
-This allows technical documentation to remain separate from evidence observed on the investigated machine.
+Hardware
 
-### Reasoning Engine
+Bugchecks
 
-A future local AI model will evaluate HALON evidence together with documentation retrieved by the Knowledge Engine.
+Windows Error Reporting
 
-The Reasoning Engine should distinguish between:
+This will allow HALON to distinguish:
 
-- Observations
-- Correlations
-- Hypotheses
-- Supporting evidence
-- Contradictory evidence
-- Evidence gaps
-- Insufficient evidence
+HALON observed X.
 
-The model should be capable of concluding that the available evidence is insufficient to establish root cause.
+from:
 
-## Long-Term Vision
+Microsoft documentation states X means Y.
 
-HALON is intended to evolve into a portable Windows diagnostic system capable of reconstructing chains such as:
+The Reasoning Engine can then combine those sources without confusing documentation with observed evidence.
 
-```text
+Long-Term Vision
+
+HALON is intended to evolve into a portable Windows diagnostic system capable of reconstructing and reasoning over chains such as:
+
 Identity
     |
     v
@@ -438,17 +703,38 @@ Application / System Event
     |
     v
 Incident Context
-```
 
-This can be particularly useful in environments where multiple users, service accounts, automation accounts, or unattended workloads execute on the same Windows systems.
+This is particularly useful in environments where multiple users, service accounts, automation accounts, scheduled workloads, scripts, and unattended processes execute on the same Windows systems.
 
 The goal is not simply to collect more logs.
 
-The goal is to make Windows evidence easier to reconstruct, understand, and defend.
+The goal is to make Windows evidence:
 
-## Status
+Easier to collect
+Easier to reconstruct
+Easier to retrieve
+Easier to reason about
+Easier to defend
 
-HALON is currently an early prototype under active development.
+Project Status
 
-The current PowerShell implementation is being preserved as a working baseline before the Evidence Engine is modularized into separate collection, normalization, correlation, and export components.
-````
+HALON is an active proof of concept.
+
+The current PoC has demonstrated:
+
+Evidence collection          ✅
+Evidence normalization       ✅
+Identity reconstruction      ✅
+Session reconstruction       ✅
+Process reconstruction       ✅
+Deterministic relationships  ✅
+Evidence packaging           ✅
+Local semantic indexing      ✅
+Natural-language retrieval   ✅
+Complete enumeration         ✅
+Local GPU reasoning          ✅
+Grounded operator answers    ✅
+
+The next major development phase is authoritative Windows knowledge retrieval.
+
+HALON is still under active development and should not yet be treated as a production incident-response or forensic platform.
