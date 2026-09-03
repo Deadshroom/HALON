@@ -5,36 +5,24 @@ $ErrorActionPreference = "Stop"
 # ---------------------------------------------
 
 . "$PSScriptRoot\core\Halon.Common.ps1"
-# Collectors
+
 . "$PSScriptRoot\collectors\Halon.HostCollector.ps1"
 . "$PSScriptRoot\collectors\Halon.EventCollector.ps1"
 . "$PSScriptRoot\collectors\Halon.IdentityCollector.ps1"
 . "$PSScriptRoot\collectors\Halon.SessionCollector.ps1"
-. "$PSScriptRoot\collectors\Halon.ProcessCollector.ps1"
-# Normalizers
+
 . "$PSScriptRoot\normalizers\Halon.EventNormalizer.ps1"
 . "$PSScriptRoot\normalizers\Halon.IdentityNormalizer.ps1"
 . "$PSScriptRoot\normalizers\Halon.SessionNormalizer.ps1"
-. "$PSScriptRoot\normalizers\Halon.ProcessNormalizer.ps1"
-# Reconstructors
+
 . "$PSScriptRoot\reconstructors\Halon.IdentitySessionReconstructor.ps1"
 . "$PSScriptRoot\reconstructors\Halon.WindowsSessionReconstructor.ps1"
-. "$PSScriptRoot\reconstructors\Halon.TimelineReconstructor.ps1"
-. "$PSScriptRoot\reconstructors\Halon.IncidentReconstructor.ps1"
 . "$PSScriptRoot\reconstructors\Halon.ProcessTreeReconstructor.ps1"
-# Correlators
-. "$PSScriptRoot\correlators\Halon.ProcessLogonCorrelator.ps1"
-. "$PSScriptRoot\correlators\Halon.EventProcessCorrelator.ps1"
-. "$PSScriptRoot\correlators\Halon.IncidentIdentityCorrelator.ps1"
-. "$PSScriptRoot\correlators\Halon.IncidentSessionCorrelator.ps1"
+
 . "$PSScriptRoot\correlators\Halon.ProcessIdentitySessionCorrelator.ps1"
-. "$PSScriptRoot\correlators\Halon.EventExecutionContextCorrelator.ps1"
-# Builder
-. "$PSScriptRoot\builders\Halon.SummaryBuilder.ps1"
-. "$PSScriptRoot\builders\Halon.ManifestBuilder.ps1"
 
 . "$PSScriptRoot\instrumentation\Halon.Performance.ps1"
-# Exporter
+
 . "$PSScriptRoot\exporters\Halon.EvidenceExporter.ps1"
 . "$PSScriptRoot\exporters\Halon.JsonExporter.ps1"
 
@@ -73,8 +61,61 @@ $PerformanceMetrics = `
 # PROCESS CREATION AUDIT CAPABILITY
 # ---------------------------------------------
 
-$ProcessAuditCapability = `
-    Get-HalonProcessAuditCapability
+$ProcessCreationAuditPolicy  = "Unknown"
+$ProcessCreationAuditEnabled = $false
+$ProcessCreationAuditError   = $null
+
+
+try {
+
+    $AuditPolicyRaw = auditpol `
+        /get `
+        /subcategory:"Process Creation" `
+        /r
+
+    if ($LASTEXITCODE -eq 0 -and $AuditPolicyRaw) {
+
+        try {
+
+            $AuditPolicyData = $AuditPolicyRaw |
+                ConvertFrom-Csv |
+                Select-Object -First 1
+
+
+            $InclusionSetting = $AuditPolicyData.'Inclusion Setting'
+
+
+            if (
+                -not [string]::IsNullOrWhiteSpace(
+                    $InclusionSetting
+                )
+            ) {
+
+                $ProcessCreationAuditPolicy = `
+                    $InclusionSetting
+
+
+                if (
+                    $InclusionSetting -match "Success"
+                ) {
+
+                    $ProcessCreationAuditEnabled = $true
+                }
+            }
+        }
+        catch {
+
+            $ProcessCreationAuditPolicy = "Unknown"
+            $ProcessCreationAuditError  = `
+                "HALON could not parse auditpol output."
+        }
+    }
+}
+catch {
+
+    $ProcessCreationAuditPolicy = "Unknown"
+    $ProcessCreationAuditError  = $_.Exception.Message
+}
 
 Write-Host ""
 Write-Host "======================================="
@@ -175,15 +216,68 @@ $IdentityCollectionError = `
 # PROCESS CREATION EVIDENCE
 # ---------------------------------------------
 $StageTimer = Start-HalonStageTimer
+Write-Host "Checking historical process creation evidence..."
+
+$ProcessCreationEventsRaw = @()
+
+$ProcessCreationEvidenceStatus = "Available"
+$ProcessCreationEvidenceError  = $null
 
 
-$ProcessCollection = `
-    Get-HalonProcessCreationEvidence `
-        -StartTime $StartTime
+try {
+
+    $ProcessCreationEventsRaw = @(
+        Get-WinEvent `
+            -FilterHashtable @{
+                LogName   = "Security"
+                StartTime = $StartTime
+                Id        = 4688
+            } `
+            -ErrorAction Stop
+    )
 
 
-$ProcessCreationEventsRaw = `
-    $ProcessCollection.Events
+    if ($ProcessCreationEventsRaw.Count -eq 0) {
+
+        $ProcessCreationEvidenceStatus = `
+            "NoEventsAvailable"
+    }
+}
+catch {
+
+    $ErrorMessage = $_.Exception.Message
+
+
+    if (
+        $ErrorMessage -like
+        "*No events were found that match the specified selection criteria*"
+    ) {
+
+        $ProcessCreationEvidenceStatus = `
+            "NoEventsAvailable"
+
+        $ProcessCreationEvidenceError = $null
+    }
+    elseif (
+        $_.Exception -is
+        [System.UnauthorizedAccessException]
+    ) {
+
+        $ProcessCreationEvidenceStatus = `
+            "UnavailableInsufficientPrivilege"
+
+        $ProcessCreationEvidenceError = `
+            $ErrorMessage
+    }
+    else {
+
+        $ProcessCreationEvidenceStatus = `
+            "Unavailable"
+
+        $ProcessCreationEvidenceError = `
+            $ErrorMessage
+    }
+}
 
 Complete-HalonStageTimer `
     -Stage "Process.Collection" `
@@ -195,12 +289,175 @@ Complete-HalonStageTimer `
 # NORMALIZE PROCESS CREATION EVIDENCE
 # ---------------------------------------------
 $StageTimer = Start-HalonStageTimer
+Write-Host "Normalizing historical process creation evidence..."
+
+$ProcessCreationEvents = $ProcessCreationEventsRaw |
+    Sort-Object TimeCreated |
+    ForEach-Object {
+
+        $EventData = Get-HalonEventData -Event $_
 
 
-$ProcessCreationEvents = `
-    ConvertTo-HalonProcessCreationEvidence `
-        -RawEvents $ProcessCreationEventsRaw
+# -------------------------------------
+# SUBJECT / CREATOR IDENTITY
+# -------------------------------------
 
+        $SubjectUserSid = `
+            $EventData["SubjectUserSid"]
+
+        $SubjectUserName = `
+            $EventData["SubjectUserName"]
+
+        $SubjectDomainName = `
+            $EventData["SubjectDomainName"]
+
+        $SubjectLogonId = `
+            $EventData["SubjectLogonId"]
+
+
+        if (
+            -not [string]::IsNullOrWhiteSpace(
+                $SubjectDomainName
+            ) -and
+
+            -not [string]::IsNullOrWhiteSpace(
+                $SubjectUserName
+            )
+        ) {
+
+            $SubjectIdentity = `
+                "$SubjectDomainName\$SubjectUserName"
+
+        }
+        else {
+
+            $SubjectIdentity = $SubjectUserName
+        }
+
+
+        # -------------------------------------
+        # NEW PROCESS
+        # -------------------------------------
+
+        $ProcessIdRaw = `
+            $EventData["NewProcessId"]
+
+        $ProcessIdDecimal = `
+            Convert-HalonHexToInt64 `
+                -Value $ProcessIdRaw
+
+        $ProcessName = `
+            $EventData["NewProcessName"]
+
+
+        # -------------------------------------
+        # CREATOR / PARENT PROCESS
+        # -------------------------------------
+
+        $ParentProcessIdRaw = `
+            $EventData["ProcessId"]
+
+        $ParentProcessIdDecimal = `
+            Convert-HalonHexToInt64 `
+                -Value $ParentProcessIdRaw
+
+        $ParentProcessName = `
+            $EventData["ParentProcessName"]
+
+
+        # -------------------------------------
+        # TARGET IDENTITY
+        # -------------------------------------
+
+        $TargetUserSid = `
+            $EventData["TargetUserSid"]
+
+        $TargetUserName = `
+            $EventData["TargetUserName"]
+
+        $TargetDomainName = `
+            $EventData["TargetDomainName"]
+
+        $TargetLogonId = `
+            $EventData["TargetLogonId"]
+
+
+        if (
+            -not [string]::IsNullOrWhiteSpace(
+                $TargetDomainName
+            ) -and
+
+            $TargetDomainName -ne "-" -and
+
+            -not [string]::IsNullOrWhiteSpace(
+                $TargetUserName
+            ) -and
+
+            $TargetUserName -ne "-"
+        ) {
+
+            $TargetIdentity = `
+                "$TargetDomainName\$TargetUserName"
+
+        }
+        else {
+
+            $TargetIdentity = $null
+        }
+
+
+        # -------------------------------------
+        # NORMALIZED PROCESS EVENT
+        # -------------------------------------
+
+        [PSCustomObject]@{
+
+            TimeCreated = $_.TimeCreated
+
+            SecurityRecordId = $_.RecordId
+
+            EventID = $_.Id
+
+
+            SubjectIdentity   = $SubjectIdentity
+            SubjectUserSid    = $SubjectUserSid
+            SubjectUserName   = $SubjectUserName
+            SubjectDomainName = $SubjectDomainName
+            SubjectLogonId    = $SubjectLogonId
+
+
+            ProcessIdRaw     = $ProcessIdRaw
+            ProcessIdDecimal = $ProcessIdDecimal
+            ProcessName      = $ProcessName
+
+
+            ParentProcessIdRaw = `
+                $ParentProcessIdRaw
+
+            ParentProcessIdDecimal = `
+                $ParentProcessIdDecimal
+
+            ParentProcessName = `
+                $ParentProcessName
+
+
+            TargetIdentity   = $TargetIdentity
+            TargetUserSid    = $TargetUserSid
+            TargetUserName   = $TargetUserName
+            TargetDomainName = $TargetDomainName
+            TargetLogonId    = $TargetLogonId
+
+
+            CommandLine = `
+                $EventData["CommandLine"]
+
+            TokenElevationType = `
+                $EventData["TokenElevationType"]
+
+            MandatoryLabel = `
+                $EventData["MandatoryLabel"]
+        }
+    }
 
 Complete-HalonStageTimer `
     -Stage "Process.Normalization" `
@@ -214,11 +471,9 @@ Complete-HalonStageTimer `
 
 $StageTimer = Start-HalonStageTimer
 
-
 $ProcessTree = `
     Get-HalonProcessTree `
         -ProcessCreationEvents $ProcessCreationEvents
-
 
 Complete-HalonStageTimer `
     -Stage "Process.TreeReconstruction" `
@@ -232,11 +487,9 @@ Complete-HalonStageTimer `
 
 $StageTimer = Start-HalonStageTimer
 
-
 $ProcessLineages = `
     Get-HalonProcessLineages `
         -ProcessTree $ProcessTree
-
 
 Complete-HalonStageTimer `
     -Stage "Process.LineageReconstruction" `
@@ -248,10 +501,75 @@ Complete-HalonStageTimer `
 # WRITE PROCESS CREATION EVIDENCE
 # ---------------------------------------------
 
-$ProcessCreationEventExport = @(
-    ConvertTo-HalonProcessCreationExport `
-        -ProcessCreationEvents $ProcessCreationEvents
-)
+$ProcessCreationEventExport = $ProcessCreationEvents |
+    ForEach-Object {
+
+        [PSCustomObject]@{
+
+            TimeCreated = (
+                [datetime]$_.TimeCreated
+            ).ToString(
+                "MM/dd/yyyy HH:mm:ss"
+            )
+
+            SecurityRecordId = `
+                $_.SecurityRecordId
+
+            EventID = `
+                $_.EventID
+
+
+            SubjectIdentity = `
+                $_.SubjectIdentity
+
+            SubjectUserSid = `
+                $_.SubjectUserSid
+
+            SubjectLogonId = `
+                $_.SubjectLogonId
+
+
+            ProcessIdRaw = `
+                $_.ProcessIdRaw
+
+            ProcessIdDecimal = `
+                $_.ProcessIdDecimal
+
+            ProcessName = `
+                $_.ProcessName
+
+
+            ParentProcessIdRaw = `
+                $_.ParentProcessIdRaw
+
+            ParentProcessIdDecimal = `
+                $_.ParentProcessIdDecimal
+
+            ParentProcessName = `
+                $_.ParentProcessName
+
+
+            TargetIdentity = `
+                $_.TargetIdentity
+
+            TargetUserSid = `
+                $_.TargetUserSid
+
+            TargetLogonId = `
+                $_.TargetLogonId
+
+
+            CommandLine = `
+                $_.CommandLine
+
+            TokenElevationType = `
+                $_.TokenElevationType
+
+            MandatoryLabel = `
+                $_.MandatoryLabel
+        }
+    }
+
 
 Write-HalonJsonArray `
     -InputObject $ProcessCreationEventExport `
@@ -277,11 +595,29 @@ Write-HalonJsonArray `
 # PROCESS EVIDENCE CAPABILITY
 # ---------------------------------------------
 
-$ProcessEvidenceCapability = `
-    New-HalonProcessEvidenceCapability `
-        -AuditCapability $ProcessAuditCapability `
-        -ProcessCollection $ProcessCollection `
-        -ProcessCreationEvents $ProcessCreationEvents
+$ProcessEvidenceCapability = [PSCustomObject]@{
+
+    AuditSubcategory = "Process Creation"
+
+    CurrentAuditPolicy = `
+        $ProcessCreationAuditPolicy
+
+    SuccessAuditingEnabled = `
+        $ProcessCreationAuditEnabled
+
+    AuditPolicyDetectionError = `
+        $ProcessCreationAuditError
+
+    Historical4688Status = `
+        $ProcessCreationEvidenceStatus
+
+    Historical4688EventsCollected = @(
+        $ProcessCreationEventsRaw
+    ).Count
+
+    Historical4688CollectionError = `
+        $ProcessCreationEvidenceError
+}
 
 
 $ProcessEvidenceCapability |
@@ -325,10 +661,47 @@ Complete-HalonStageTimer `
 # WRITE RECONSTRUCTED IDENTITY SESSIONS
 # ---------------------------------------------
 
-$IdentitySessionExport = @(
-    ConvertTo-HalonIdentitySessionExport `
-        -IdentitySessions $IdentitySessions
-)
+$IdentitySessionExport = $IdentitySessions |
+    ForEach-Object {
+
+        [PSCustomObject]@{
+
+            Identity = $_.Identity
+            IdentityClass = $_.IdentityClass
+            UserName = $_.UserName
+            Domain   = $_.Domain
+            UserSid  = $_.UserSid
+            LogonId   = $_.LogonId
+            LogonType = $_.LogonType
+
+            SessionStart = (
+                [datetime]$_.SessionStart
+            ).ToString(
+                "MM/dd/yyyy HH:mm:ss"
+            )
+
+            SessionEnd = if ($null -ne $_.SessionEnd) {
+
+                (
+                    [datetime]$_.SessionEnd
+                ).ToString(
+                    "MM/dd/yyyy HH:mm:ss"
+                )
+
+            }
+            else {
+                $null
+            }
+
+            DurationMinutes = $_.DurationMinutes
+
+            State     = $_.State
+            EndReason = $_.EndReason
+
+            LogonRecordId  = $_.LogonRecordId
+            LogoffRecordId = $_.LogoffRecordId
+        }
+    }
 
 
 Write-HalonJsonArray `
@@ -424,10 +797,61 @@ Complete-HalonStageTimer `
 # WRITE RECONSTRUCTED WINDOWS SESSIONS
 # ---------------------------------------------
 
-$WindowsSessionExport = @(
-    ConvertTo-HalonWindowsSessionExport `
-        -WindowsSessions $WindowsSessions
-)
+$WindowsSessionExport = $WindowsSessions |
+    ForEach-Object {
+
+        [PSCustomObject]@{
+
+            User = $_.User
+
+            SessionId = $_.SessionId
+
+            SourceAddress = $_.SourceAddress
+
+            SessionStart = (
+                [datetime]$_.SessionStart
+            ).ToString(
+                "MM/dd/yyyy HH:mm:ss"
+            )
+
+            SessionEnd = if ($null -ne $_.SessionEnd) {
+
+                (
+                    [datetime]$_.SessionEnd
+                ).ToString(
+                    "MM/dd/yyyy HH:mm:ss"
+                )
+
+            }
+            else {
+                $null
+            }
+
+            State = $_.State
+
+            LogonRecordId  = $_.LogonRecordId
+            LogoffRecordId = $_.LogoffRecordId
+
+            StateEvents = @(
+                $_.StateEvents |
+                    ForEach-Object {
+
+                        [PSCustomObject]@{
+
+                            TimeCreated = (
+                                [datetime]$_.TimeCreated
+                            ).ToString(
+                                "MM/dd/yyyy HH:mm:ss"
+                            )
+
+                            Action   = $_.Action
+                            RecordId = $_.RecordId
+                        }
+                    }
+            )
+        }
+    }
+
 
 Write-HalonJsonArray `
     -InputObject $WindowsSessionExport `
@@ -445,33 +869,81 @@ Write-HalonJsonArray `
 # ---------------------------------------------
 # PROCESS / LOGON CONTEXT CORRELATION
 # ---------------------------------------------
-
-# ---------------------------------------------
-# BUILD LOGON INDEX
-# ---------------------------------------------
-
 $StageTimer = Start-HalonStageTimer
+Write-Host "Correlating processes with logon contexts..."
 
-$LogonIndex = New-HalonLogonIndex `
-    -IdentityEvents $IdentityEvents
-
-Complete-HalonStageTimer `
-    -Stage "Correlation.LogonIndexBuild" `
-    -Stopwatch $StageTimer `
-    -Metrics $PerformanceMetrics `
-    -ItemCount $LogonIndex.Count
+$ProcessLogonContexts = @()
 
 
-# ---------------------------------------------
-# PROCESS / LOGON CORRELATION
-# ---------------------------------------------
+foreach ($Process in $ProcessCreationEvents) {
 
-$StageTimer = Start-HalonStageTimer
+    $MatchingLogon = $IdentityEvents |
+        Where-Object {
 
-$ProcessLogonContexts = `
-    Get-HalonProcessLogonCorrelations `
-        -ProcessCreationEvents $ProcessCreationEvents `
-        -LogonIndex $LogonIndex
+            $_.Action -eq "Logon" -and
+            $_.LogonId -eq $Process.SubjectLogonId -and
+            [datetime]$_.TimeCreated -le [datetime]$Process.TimeCreated
+
+        } |
+        Sort-Object TimeCreated -Descending |
+        Select-Object -First 1
+
+
+    if ($null -ne $MatchingLogon) {
+
+        $LogonContextFound = $true
+
+        $LogonIdentity = $MatchingLogon.Identity
+        $LogonUserSid  = $MatchingLogon.UserSid
+        $LogonType     = $MatchingLogon.LogonType
+        $LogonTime     = $MatchingLogon.TimeCreated
+        $LogonRecordId = $MatchingLogon.RecordId
+    }
+    else {
+
+        $LogonContextFound = $false
+
+        $LogonIdentity = $null
+        $LogonUserSid  = $null
+        $LogonType     = $null
+        $LogonTime     = $null
+        $LogonRecordId = $null
+    }
+
+
+    $ProcessLogonContexts += [PSCustomObject]@{
+
+        ProcessTime = $Process.TimeCreated
+
+        ProcessId = $Process.ProcessIdDecimal
+        ProcessIdRaw = $Process.ProcessIdRaw
+        ProcessName = $Process.ProcessName
+
+        ParentProcessId = $Process.ParentProcessIdDecimal
+        ParentProcessName = $Process.ParentProcessName
+
+        SubjectIdentity = $Process.SubjectIdentity
+        SubjectUserSid = $Process.SubjectUserSid
+        SubjectLogonId = $Process.SubjectLogonId
+
+        LogonContextFound = $LogonContextFound
+
+        LogonIdentity = $LogonIdentity
+        LogonUserSid = $LogonUserSid
+        LogonType = $LogonType
+        LogonTime = $LogonTime
+
+        ProcessSecurityRecordId = $Process.SecurityRecordId
+        LogonSecurityRecordId = $LogonRecordId
+
+        EvidenceBasis = if ($LogonContextFound) {
+            "SecurityLogonIdMatch"
+        }
+        else {
+            "NoMatchingSecurityLogon"
+        }
+    }
+}
 
 Complete-HalonStageTimer `
     -Stage "Correlation.ProcessToLogon" `
@@ -485,13 +957,11 @@ Complete-HalonStageTimer `
 
 $StageTimer = Start-HalonStageTimer
 
-
 $ProcessExecutionContexts = `
     Get-HalonProcessExecutionContexts `
         -ProcessLineages $ProcessLineages `
         -ProcessLogonContexts $ProcessLogonContexts `
         -WindowsSessions $WindowsSessions
-
 
 Complete-HalonStageTimer `
     -Stage "Correlation.ProcessIdentitySession" `
@@ -516,14 +986,59 @@ Write-HalonJsonArray `
             "process-execution-contexts.json"
     ) `
     -Depth 10
+
 # ---------------------------------------------
 # WRITE PROCESS / LOGON CONTEXT
 # ---------------------------------------------
 
-$ProcessLogonContextExport = @(
-    ConvertTo-HalonProcessLogonContextExport `
-        -ProcessLogonContexts $ProcessLogonContexts
-)
+$ProcessLogonContextExport = $ProcessLogonContexts |
+    ForEach-Object {
+
+        [PSCustomObject]@{
+
+            ProcessTime = (
+                [datetime]$_.ProcessTime
+            ).ToString(
+                "MM/dd/yyyy HH:mm:ss"
+            )
+
+            ProcessId = $_.ProcessId
+            ProcessIdRaw = $_.ProcessIdRaw
+            ProcessName = $_.ProcessName
+
+            ParentProcessId = $_.ParentProcessId
+            ParentProcessName = $_.ParentProcessName
+
+            SubjectIdentity = $_.SubjectIdentity
+            SubjectUserSid = $_.SubjectUserSid
+            SubjectLogonId = $_.SubjectLogonId
+
+            LogonContextFound = $_.LogonContextFound
+            LogonIdentity = $_.LogonIdentity
+            LogonUserSid = $_.LogonUserSid
+            LogonType = $_.LogonType
+
+            LogonTime = if ($null -ne $_.LogonTime) {
+
+                (
+                    [datetime]$_.LogonTime
+                ).ToString(
+                    "MM/dd/yyyy HH:mm:ss"
+                )
+            }
+            else {
+                $null
+            }
+
+            ProcessSecurityRecordId = `
+                $_.ProcessSecurityRecordId
+
+            LogonSecurityRecordId = `
+                $_.LogonSecurityRecordId
+
+            EvidenceBasis = $_.EvidenceBasis
+        }
+    }
 
 
 Write-HalonJsonArray `
@@ -535,13 +1050,48 @@ Write-HalonJsonArray `
 # EVENT PROCESS REFERENCES
 # ---------------------------------------------
 $StageTimer = Start-HalonStageTimer
+Write-Host "Extracting event process references..."
+
+$EventProcessReferences = @()
 
 
-$EventProcessReferences = @(
-    Get-HalonEventProcessReferences `
-        -Events $Events
-)
+foreach ($Event in $Events) {
 
+    $ProcessReference = Get-HalonEventProcessReference `
+        -Event $Event
+
+
+    if ($ProcessReference.HasProcessReference) {
+
+        $EventProcessReferences += [PSCustomObject]@{
+
+            EventTime = $Event.OccurrenceTime
+
+            EventRecordId = $Event.RecordId
+
+            EventProvider = $Event.Provider
+            EventID       = $Event.EventID
+            EventLevel    = $Event.Level
+
+            ReferenceType = `
+                $ProcessReference.ReferenceType
+
+            ReferencedProcessIdRaw = `
+                $ProcessReference.ProcessIdRaw
+
+            ReferencedProcessId = `
+                $ProcessReference.ProcessIdDecimal
+
+            ReferencedProcessName = `
+                $ProcessReference.ProcessName
+
+            ReferencedProcessPath = `
+                $ProcessReference.ProcessPath
+
+            EventMessage = $Event.Message
+        }
+    }
+}
 
 Complete-HalonStageTimer `
     -Stage "Correlation.EventReferences" `
@@ -549,54 +1099,369 @@ Complete-HalonStageTimer `
     -Metrics $PerformanceMetrics `
     -ItemCount @($EventProcessReferences).Count
 
-
 # ---------------------------------------------
 # EVENT / HISTORICAL PROCESS CORRELATION
 # ---------------------------------------------
-
 $StageTimer = Start-HalonStageTimer
+Write-Host "Correlating events with historical processes..."
+
+$EventProcessCorrelations = @()
 
 
-$EventProcessCorrelations = @(
-    Get-HalonEventProcessCorrelations `
-        -EventProcessReferences $EventProcessReferences `
-        -ProcessLogonContexts $ProcessLogonContexts
-)
+foreach ($Reference in $EventProcessReferences) {
+
+    $EventTime = [datetime]$Reference.EventTime
 
 
+    $PossibleMatches = $ProcessLogonContexts |
+        Where-Object {
+
+            [datetime]$_.ProcessTime -le $EventTime -and
+
+            $_.ProcessId -eq `
+                $Reference.ReferencedProcessId
+        }
+
+
+    # -----------------------------------------
+    # Require process-name/path agreement
+    # whenever the event supplied one.
+    # -----------------------------------------
+
+    if (
+        -not [string]::IsNullOrWhiteSpace(
+            $Reference.ReferencedProcessName
+        )
+    ) {
+
+        $PossibleMatches = $PossibleMatches |
+            Where-Object {
+
+                $HistoricalName = `
+                    [System.IO.Path]::GetFileName(
+                        $_.ProcessName
+                    )
+
+                $HistoricalName -ieq `
+                    $Reference.ReferencedProcessName
+            }
+    }
+
+
+    # PID reuse is possible.
+    # The most recent compatible process creation
+    # before the event is the relevant historical
+    # process record.
+
+    $MatchingProcess = $PossibleMatches |
+        Sort-Object ProcessTime -Descending |
+        Select-Object -First 1
+
+
+    if ($null -ne $MatchingProcess) {
+
+        $ProcessMatchFound = $true
+
+        $ProcessCreated = `
+            $MatchingProcess.ProcessTime
+
+        $ProcessAgeSeconds = [math]::Round(
+            (
+                $EventTime -
+                [datetime]$MatchingProcess.ProcessTime
+            ).TotalSeconds,
+            3
+        )
+
+
+        if (
+            -not [string]::IsNullOrWhiteSpace(
+                $Reference.ReferencedProcessName
+            )
+        ) {
+
+            $MatchBasis = "ProcessIdAndProcessName"
+
+        }
+        else {
+
+            $MatchBasis = "ProcessIdOnly"
+        }
+    }
+    else {
+
+        $ProcessMatchFound = $false
+        $ProcessCreated    = $null
+        $ProcessAgeSeconds = $null
+        $MatchBasis        = "NoHistoricalProcessMatch"
+    }
+
+
+    $EventProcessCorrelations += [PSCustomObject]@{
+
+        # EVENT SIDE
+
+        EventTime     = $Reference.EventTime
+        EventRecordId = $Reference.EventRecordId
+
+        EventProvider = $Reference.EventProvider
+        EventID       = $Reference.EventID
+        EventLevel    = $Reference.EventLevel
+
+
+        ReferencedProcessId = `
+            $Reference.ReferencedProcessId
+
+        ReferencedProcessName = `
+            $Reference.ReferencedProcessName
+
+        ReferencedProcessPath = `
+            $Reference.ReferencedProcessPath
+
+
+        # CORRELATION
+
+        HistoricalProcessFound = `
+            $ProcessMatchFound
+
+        MatchBasis = `
+            $MatchBasis
+
+        ProcessAgeAtEventSeconds = `
+            $ProcessAgeSeconds
+
+
+        # HISTORICAL PROCESS SIDE
+
+        HistoricalProcessCreated = if (
+            $ProcessMatchFound
+        ) {
+
+            $MatchingProcess.ProcessTime
+
+        }
+        else {
+
+            $null
+        }
+
+
+        HistoricalProcessName = if (
+            $ProcessMatchFound
+        ) {
+
+            $MatchingProcess.ProcessName
+
+        }
+        else {
+
+            $null
+        }
+
+
+        ParentProcessName = if (
+            $ProcessMatchFound
+        ) {
+
+            $MatchingProcess.ParentProcessName
+
+        }
+        else {
+
+            $null
+        }
+
+
+        ParentProcessId = if (
+            $ProcessMatchFound
+        ) {
+
+            $MatchingProcess.ParentProcessId
+
+        }
+        else {
+
+            $null
+        }
+
+
+        # IDENTITY SIDE
+
+        SubjectIdentity = if (
+            $ProcessMatchFound
+        ) {
+
+            $MatchingProcess.SubjectIdentity
+
+        }
+        else {
+
+            $null
+        }
+
+
+        SubjectUserSid = if (
+            $ProcessMatchFound
+        ) {
+
+            $MatchingProcess.SubjectUserSid
+
+        }
+        else {
+
+            $null
+        }
+
+
+        SubjectLogonId = if (
+            $ProcessMatchFound
+        ) {
+
+            $MatchingProcess.SubjectLogonId
+
+        }
+        else {
+
+            $null
+        }
+
+
+        LogonContextFound = if (
+            $ProcessMatchFound
+        ) {
+
+            $MatchingProcess.LogonContextFound
+
+        }
+        else {
+
+            $false
+        }
+
+
+        LogonIdentity = if (
+            $ProcessMatchFound
+        ) {
+
+            $MatchingProcess.LogonIdentity
+
+        }
+        else {
+
+            $null
+        }
+
+
+        EvidenceBasis = if (
+            $ProcessMatchFound
+        ) {
+
+            "WindowsEventProcessReference+" +
+            "Security4688"
+
+        }
+        else {
+
+            "WindowsEventProcessReferenceOnly"
+        }
+    }
+}
 Complete-HalonStageTimer `
     -Stage "Correlation.EventToProcess" `
     -Stopwatch $StageTimer `
     -Metrics $PerformanceMetrics `
     -ItemCount @($EventProcessCorrelations).Count
-
-# ---------------------------------------------
-# EVENT EXECUTION CONTEXT
-# ---------------------------------------------
-
-$StageTimer = Start-HalonStageTimer
-
-
-$EventExecutionContexts = `
-    Get-HalonEventExecutionContexts `
-        -EventProcessCorrelations $EventProcessCorrelations `
-        -ProcessExecutionContexts $ProcessExecutionContexts
-
-
-Complete-HalonStageTimer `
-    -Stage "Correlation.EventExecutionContext" `
-    -Stopwatch $StageTimer `
-    -Metrics $PerformanceMetrics `
-    -ItemCount @($EventExecutionContexts).Count
-
 # ---------------------------------------------
 # WRITE EVENT / PROCESS CORRELATION
 # ---------------------------------------------
 
-$EventProcessCorrelationExport = @(
-    ConvertTo-HalonEventProcessCorrelationExport `
-        -EventProcessCorrelations $EventProcessCorrelations
-)
+$EventProcessCorrelationExport = `
+    $EventProcessCorrelations |
+    ForEach-Object {
+
+        [PSCustomObject]@{
+
+            EventTime = (
+                [datetime]$_.EventTime
+            ).ToString(
+                "MM/dd/yyyy HH:mm:ss"
+            )
+
+            EventRecordId = $_.EventRecordId
+
+            EventProvider = $_.EventProvider
+            EventID       = $_.EventID
+            EventLevel    = $_.EventLevel
+
+
+            ReferencedProcessId = `
+                $_.ReferencedProcessId
+
+            ReferencedProcessName = `
+                $_.ReferencedProcessName
+
+            ReferencedProcessPath = `
+                $_.ReferencedProcessPath
+
+
+            HistoricalProcessFound = `
+                $_.HistoricalProcessFound
+
+            MatchBasis = `
+                $_.MatchBasis
+
+            ProcessAgeAtEventSeconds = `
+                $_.ProcessAgeAtEventSeconds
+
+
+            HistoricalProcessCreated = if (
+                $null -ne $_.HistoricalProcessCreated
+            ) {
+
+                (
+                    [datetime]$_.HistoricalProcessCreated
+                ).ToString(
+                    "MM/dd/yyyy HH:mm:ss"
+                )
+            }
+            else {
+
+                $null
+            }
+
+
+            HistoricalProcessName = `
+                $_.HistoricalProcessName
+
+            ParentProcessId = `
+                $_.ParentProcessId
+
+            ParentProcessName = `
+                $_.ParentProcessName
+
+
+            SubjectIdentity = `
+                $_.SubjectIdentity
+
+            SubjectUserSid = `
+                $_.SubjectUserSid
+
+            SubjectLogonId = `
+                $_.SubjectLogonId
+
+
+            LogonContextFound = `
+                $_.LogonContextFound
+
+            LogonIdentity = `
+                $_.LogonIdentity
+
+
+            EvidenceBasis = `
+                $_.EvidenceBasis
+        }
+    }
+
 # ---------------------------------------------
 # GUARANTEED EVENT / PROCESS CORRELATION EXPORT
 # ---------------------------------------------
@@ -617,27 +1482,268 @@ Write-HalonJsonArray `
 # EVIDENCE CATEGORY SUMMARY
 # ---------------------------------------------
 
-$EvidenceSummary = @(
-    Get-HalonEvidenceSummary `
-        -Events $Events
-)
+Write-Host "Categorizing incident evidence..."
+
+$EvidenceSummary = $Events |
+    Group-Object Category |
+    Sort-Object Count -Descending |
+    ForEach-Object {
+
+        [PSCustomObject]@{
+            Category = $_.Name
+            Count    = $_.Count
+        }
+    }
+
 
 Write-HalonJsonArray `
     -InputObject $EvidenceSummary `
     -Path (Join-Path $RunDirectory "evidence-summary.json") `
     -Depth 4
 # ---------------------------------------------
-# TIMELINE RECONSTRUCTION
+# CHRONOLOGICAL TIMELINE
 # ---------------------------------------------
 
-$Timeline = Get-HalonTimeline `
-    -Events $Events
+Write-Host "Building chronological timeline..."
 
-$TimelineExport = @(
-    ConvertTo-HalonTimelineExport `
-        -Timeline $Timeline
-)
+$Timeline = $Events |
+    Sort-Object OccurrenceTime |
+    ForEach-Object {
 
+        $Event = $_
+        $AnchorType = $null
+
+        switch ($Event.EventID) {
+
+            41 {
+                if ($Event.Provider -like "*Kernel-Power*") {
+                    $AnchorType = "UnexpectedRestart"
+                }
+            }
+
+            1001 {
+                if ($Event.Provider -like "*BugCheck*") {
+                    $AnchorType = "BugCheck"
+                }
+            }
+
+            1074 {
+                if ($Event.Provider -like "*User32*") {
+                    $AnchorType = "PlannedShutdownOrRestart"
+                }
+            }
+
+            6005 {
+                if ($Event.Provider -eq "EventLog") {
+                    $AnchorType = "EventLogStarted"
+                }
+            }
+
+            6006 {
+                if ($Event.Provider -eq "EventLog") {
+                    $AnchorType = "EventLogStopped"
+                }
+            }
+
+            6008 {
+                if ($Event.Provider -eq "EventLog") {
+                    $AnchorType = "UnexpectedShutdownConfirmed"
+                }
+            }
+        }
+
+        [PSCustomObject]@{
+            LoggedTime     = $Event.LoggedTime
+            OccurrenceTime = $Event.OccurrenceTime
+            LogName     = $Event.LogName
+            RecordId    = $Event.RecordId
+            Level       = $Event.Level
+            EventID     = $Event.EventID
+            Provider    = $Event.Provider
+            AnchorType  = $AnchorType
+            Message     = $Event.Message
+            Category       = $Event.Category
+            EventSignature = $Event.EventSignature
+            SeverityScore  = $Event.SeverityScore
+        }
+    }
+
+# ---------------------------------------------
+# BOOT SESSION RECONSTRUCTION
+# ---------------------------------------------
+
+Write-Host "Reconstructing boot sessions..."
+
+$BootSessionNumber = 0
+$BootSessionActive = $false
+
+
+$Timeline = $Timeline |
+    ForEach-Object {
+
+        $Event = $_
+
+
+        # EventLog 6005 indicates that the Windows
+        # Event Log service has started.
+        #
+        # HALON uses this as a practical boot-session
+        # boundary.
+
+        if (
+            $Event.Provider -eq "EventLog" -and
+            $Event.EventID -eq 6005
+        ) {
+
+            $BootSessionNumber++
+            $BootSessionActive = $true
+        }
+
+
+        if ($BootSessionNumber -eq 0) {
+
+            $BootSessionId = "PRE_COLLECTION_BOOT"
+
+        }
+        else {
+
+            $BootSessionId = "BOOT_{0:D3}" -f $BootSessionNumber
+        }
+
+
+        $Event |
+            Add-Member `
+                -NotePropertyName BootSessionId `
+                -NotePropertyValue $BootSessionId `
+                -Force
+
+
+        $Event |
+            Add-Member `
+                -NotePropertyName BootSessionActive `
+                -NotePropertyValue $BootSessionActive `
+                -Force
+
+
+        # EventLog 6006 means the Event Log service
+        # stopped normally.
+
+        if (
+            $Event.Provider -eq "EventLog" -and
+            $Event.EventID -eq 6006
+        ) {
+
+            $BootSessionActive = $false
+        }
+
+
+        $Event
+    }
+
+# ---------------------------------------------
+# EVENT-TO-EVENT CHRONOLOGY
+# ---------------------------------------------
+
+Write-Host "Calculating event chronology deltas..."
+
+$PreviousEventTime = $null
+
+
+$Timeline = $Timeline |
+    ForEach-Object {
+
+        $EventTime = [datetime]$_.OccurrenceTime
+
+
+        if ($null -eq $PreviousEventTime) {
+
+            $SecondsSincePreviousEvent = $null
+
+        }
+        else {
+
+            $SecondsSincePreviousEvent = [math]::Round(
+                ($EventTime - $PreviousEventTime).TotalSeconds,
+                3
+            )
+        }
+
+
+        $_ |
+            Add-Member `
+                -NotePropertyName SecondsSincePreviousEvent `
+                -NotePropertyValue $SecondsSincePreviousEvent `
+                -Force
+
+
+        $PreviousEventTime = $EventTime
+
+        $_
+    }
+
+# ---------------------------------------------
+# COLLECTION RECURRENCE
+# ---------------------------------------------
+
+Write-Host "Calculating event recurrence..."
+
+$CollectionOccurrenceCounts = @{}
+
+$Timeline |
+    Group-Object EventSignature |
+    ForEach-Object {
+
+        if (-not [string]::IsNullOrWhiteSpace($_.Name)) {
+
+            $CollectionOccurrenceCounts[$_.Name] = $_.Count
+
+        }
+    }
+
+
+$Timeline = $Timeline |
+    ForEach-Object {
+
+        $OccurrenceCount = 0
+
+        if (
+            -not [string]::IsNullOrWhiteSpace($_.EventSignature) -and
+            $CollectionOccurrenceCounts.ContainsKey($_.EventSignature)
+        ) {
+            $OccurrenceCount =
+                $CollectionOccurrenceCounts[$_.EventSignature]
+        }
+
+        $_ |
+            Add-Member `
+                -NotePropertyName OccurrencesInCollection `
+                -NotePropertyValue $OccurrenceCount `
+                -Force
+
+        $_
+    }
+    
+$TimelineExport = $Timeline |
+    ForEach-Object {
+
+        [PSCustomObject]@{
+            LoggedTime     = ([datetime]$_.LoggedTime).ToString("MM/dd/yyyy HH:mm:ss")
+            OccurrenceTime = ([datetime]$_.OccurrenceTime).ToString("MM/dd/yyyy HH:mm:ss")
+            LogName        = $_.LogName
+            RecordId       = $_.RecordId
+            Level          = $_.Level
+            EventID        = $_.EventID
+            Provider       = $_.Provider
+            AnchorType     = $_.AnchorType
+            Message        = $_.Message
+            Category = $_.Category
+            EventSignature          = $_.EventSignature
+            SeverityScore           = $_.SeverityScore
+            BootSessionId = $_.BootSessionId
+            BootSessionActive = $_.BootSessionActive
+            SecondsSincePreviousEvent = $_.SecondsSincePreviousEvent
+        }
+    }
 
 Write-HalonJsonArray `
     -InputObject $TimelineExport `
@@ -645,18 +1751,143 @@ Write-HalonJsonArray `
     -Depth 5
 
 # ---------------------------------------------
-# INCIDENT RECONSTRUCTION
+# FULL INCIDENT CONTEXT
 # ---------------------------------------------
 
-$IncidentAnchors = `
-    Get-HalonIncidentAnchors `
-        -Timeline $Timeline
+Write-Host "Building full incident context..."
+
+$IncidentContexts = @()
 
 
-$IncidentContexts = `
-    Get-HalonIncidentContexts `
-        -Timeline $Timeline `
-        -IncidentAnchors $IncidentAnchors
+$ContextAnchors = $Timeline |
+    Where-Object {
+        $_.AnchorType -eq "UnexpectedShutdownConfirmed"
+    }
+
+
+foreach ($Anchor in $ContextAnchors) {
+
+    $AnchorTime = [datetime]$Anchor.OccurrenceTime
+
+
+    $ContextEvents = $Timeline |
+        ForEach-Object {
+
+            $EventTime = [datetime]$_.OccurrenceTime
+
+            $MinutesFromIncident = [math]::Round(
+                ($EventTime - $AnchorTime).TotalMinutes,
+                3
+            )
+
+
+            if ($_.RecordId -eq $Anchor.RecordId) {
+
+                $IncidentPhase = "INCIDENT"
+
+            }
+            elseif ($EventTime -lt $AnchorTime) {
+
+                $IncidentPhase = "PRE_INCIDENT"
+
+            }
+            else {
+
+                $IncidentPhase = "POST_INCIDENT"
+            }
+
+
+            $WithinFocusedWindow = (
+                $MinutesFromIncident -ge -30 -and
+                $MinutesFromIncident -le 10
+            )
+
+
+            [PSCustomObject]@{
+
+                OccurrenceTime = (
+                    [datetime]$_.OccurrenceTime
+                ).ToString(
+                    "MM/dd/yyyy HH:mm:ss"
+                )
+
+                LoggedTime = (
+                    [datetime]$_.LoggedTime
+                ).ToString(
+                    "MM/dd/yyyy HH:mm:ss"
+                )
+
+                MinutesFromIncident = `
+                    $MinutesFromIncident
+
+                IncidentPhase = `
+                    $IncidentPhase
+
+                WithinFocusedWindow = `
+                    $WithinFocusedWindow
+
+                BootSessionId = `
+                    $_.BootSessionId
+
+                BootSessionActive = `
+                    $_.BootSessionActive
+
+                SecondsSincePreviousEvent = `
+                    $_.SecondsSincePreviousEvent
+
+                LogName = `
+                    $_.LogName
+
+                RecordId = `
+                    $_.RecordId
+
+                Provider = `
+                    $_.Provider
+
+                EventID = `
+                    $_.EventID
+
+                Level = `
+                    $_.Level
+
+                SeverityScore = `
+                    $_.SeverityScore
+
+                Category = `
+                    $_.Category
+
+                EventSignature = `
+                    $_.EventSignature
+
+                OccurrencesInCollection = `
+                    $_.OccurrencesInCollection
+
+                AnchorType = `
+                    $_.AnchorType
+
+                Message = `
+                    $_.Message
+            }
+        }
+
+
+    $IncidentContexts += [PSCustomObject]@{
+
+        IncidentType = "UnexpectedShutdown"
+
+        AnchorTime = $AnchorTime.ToString(
+            "MM/dd/yyyy HH:mm:ss"
+        )
+
+        CollectionEventCount = @(
+            $ContextEvents
+        ).Count
+
+        Events = @(
+            $ContextEvents
+        )
+    }
+}
 
 
 Write-HalonJsonArray `
@@ -667,12 +1898,113 @@ Write-HalonJsonArray `
 # ---------------------------------------------
 # INCIDENT IDENTITY CORRELATION
 # ---------------------------------------------
-$IncidentIdentityContexts = `
-    Get-HalonIncidentIdentityContexts `
-        -IncidentAnchors $IncidentAnchors `
-        -IdentitySessions $IdentitySessions `
-        -IdentityCollectionStatus $IdentityCollectionStatus `
-        -CollectionWindowStart $StartTime
+
+Write-Host "Correlating identity sessions to incidents..."
+
+$IncidentIdentityContexts = @()
+
+
+foreach ($Anchor in $ContextAnchors) {
+
+    $AnchorTime = [datetime]$Anchor.OccurrenceTime
+
+
+    $SessionsAtIncident = $IdentitySessions |
+        Where-Object {
+
+            $SessionStart = [datetime]$_.SessionStart
+
+            if ($null -ne $_.SessionEnd) {
+
+                $SessionEnd = [datetime]$_.SessionEnd
+
+            }
+            else {
+
+                $SessionEnd = $null
+            }
+
+
+            $SessionStart -le $AnchorTime -and
+            (
+                $null -eq $SessionEnd -or
+                $SessionEnd -ge $AnchorTime
+            )
+        } |
+        ForEach-Object {
+
+            [PSCustomObject]@{
+
+                Identity      = $_.Identity
+                IdentityClass = $_.IdentityClass
+
+                UserName = $_.UserName
+                Domain   = $_.Domain
+                UserSid  = $_.UserSid
+
+                LogonId   = $_.LogonId
+                LogonType = $_.LogonType
+
+                SessionStart = (
+                    [datetime]$_.SessionStart
+                ).ToString(
+                    "MM/dd/yyyy HH:mm:ss"
+                )
+
+                SessionEnd = if ($null -ne $_.SessionEnd) {
+
+                    (
+                        [datetime]$_.SessionEnd
+                    ).ToString(
+                        "MM/dd/yyyy HH:mm:ss"
+                    )
+
+                }
+                else {
+
+                    $null
+                }
+
+                SessionEndKnown = (
+                    $null -ne $_.SessionEnd
+                )
+
+                SessionStateAtCollection = $_.State
+
+                LogonRecordId  = $_.LogonRecordId
+                LogoffRecordId = $_.LogoffRecordId
+
+                EvidenceBasis = "SecurityLogIntervalOverlap"
+            }
+        }
+
+
+    $IncidentIdentityContexts += [PSCustomObject]@{
+
+        IncidentType = "UnexpectedShutdown"
+
+        IncidentTime = $AnchorTime.ToString(
+            "MM/dd/yyyy HH:mm:ss"
+        )
+
+        IdentityCollectionStatus = `
+            $IdentityCollectionStatus
+
+        CollectionWindowStart = (
+            [datetime]$StartTime
+        ).ToString(
+            "MM/dd/yyyy HH:mm:ss"
+        )
+
+        SessionCount = @(
+            $SessionsAtIncident
+        ).Count
+
+        Sessions = @(
+            $SessionsAtIncident
+        )
+    }
+}
 
 
 Write-HalonJsonArray `
@@ -684,11 +2016,133 @@ Write-HalonJsonArray `
 # WINDOWS SESSION / INCIDENT CORRELATION
 # ---------------------------------------------
 
-$WindowsSessionIncidentContexts = `
-    Get-HalonIncidentWindowsSessionContexts `
-        -IncidentAnchors $IncidentAnchors `
-        -WindowsSessions $WindowsSessions `
-        -CollectionWindowStart $StartTime
+Write-Host "Correlating Windows sessions to incidents..."
+
+$WindowsSessionIncidentContexts = @()
+
+
+foreach ($Anchor in $ContextAnchors) {
+
+    $AnchorTime = [datetime]$Anchor.OccurrenceTime
+
+
+    # Determine whether HALON's current collection window
+    # actually covers the incident occurrence time.
+
+    if ($AnchorTime -lt $StartTime) {
+
+        $SessionEvidenceCoverage = "IncidentBeforeCollectionWindow"
+
+    }
+    else {
+
+        $SessionEvidenceCoverage = "Covered"
+    }
+
+
+    # Only perform interval correlation when the incident
+    # itself is inside the collected session-history window.
+
+    if ($SessionEvidenceCoverage -eq "Covered") {
+
+        $SessionsAtIncident = @(
+            $WindowsSessions |
+                Where-Object {
+
+                    $SessionStart = [datetime]$_.SessionStart
+
+
+                    if ($null -ne $_.SessionEnd) {
+
+                        $SessionEnd = [datetime]$_.SessionEnd
+
+                    }
+                    else {
+
+                        $SessionEnd = $null
+                    }
+
+
+                    $SessionStart -le $AnchorTime -and
+                    (
+                        $null -eq $SessionEnd -or
+                        $SessionEnd -ge $AnchorTime
+                    )
+                } |
+                ForEach-Object {
+
+                    [PSCustomObject]@{
+
+                        User = $_.User
+
+                        SessionId = $_.SessionId
+
+                        SourceAddress = $_.SourceAddress
+
+                        SessionStart = (
+                            [datetime]$_.SessionStart
+                        ).ToString(
+                            "MM/dd/yyyy HH:mm:ss"
+                        )
+
+                        SessionEnd = if ($null -ne $_.SessionEnd) {
+
+                            (
+                                [datetime]$_.SessionEnd
+                            ).ToString(
+                                "MM/dd/yyyy HH:mm:ss"
+                            )
+
+                        }
+                        else {
+
+                            $null
+                        }
+
+                        SessionStateAtCollection = $_.State
+
+                        LogonRecordId = $_.LogonRecordId
+                        LogoffRecordId = $_.LogoffRecordId
+
+                        EvidenceBasis = `
+                            "LocalSessionManagerIntervalOverlap"
+                    }
+                }
+        )
+
+    }
+    else {
+
+        $SessionsAtIncident = @()
+    }
+
+
+    $WindowsSessionIncidentContexts += [PSCustomObject]@{
+
+        IncidentType = "UnexpectedShutdown"
+
+        IncidentTime = $AnchorTime.ToString(
+            "MM/dd/yyyy HH:mm:ss"
+        )
+
+        CollectionWindowStart = (
+            [datetime]$StartTime
+        ).ToString(
+            "MM/dd/yyyy HH:mm:ss"
+        )
+
+        SessionEvidenceCoverage = `
+            $SessionEvidenceCoverage
+
+        SessionCount = @(
+            $SessionsAtIncident
+        ).Count
+
+        Sessions = @(
+            $SessionsAtIncident
+        )
+    }
+}
 
 
 Write-HalonJsonArray `
@@ -704,21 +2158,262 @@ Write-HalonJsonArray `
 # INCIDENT WINDOWS
 # ---------------------------------------------
 
-$IncidentWindows = `
-    Get-HalonIncidentWindows `
-        -Timeline $Timeline `
-        -IncidentAnchors $IncidentAnchors `
-        -CanonicalEvents $Events
+Write-Host "Building enriched incident windows..."
+
+$IncidentWindows = @()
+
+
+$IncidentAnchors = $Timeline |
+    Where-Object {
+        $_.AnchorType -eq "UnexpectedShutdownConfirmed"
+    }
+
+
+foreach ($Anchor in $IncidentAnchors) {
+
+    $AnchorTime = [datetime]$Anchor.OccurrenceTime
+
+    $WindowStart = $AnchorTime.AddMinutes(-30)
+    $WindowEnd   = $AnchorTime.AddMinutes(10)
+
+
+    # -----------------------------------------
+    # Collect raw events inside incident window
+    # -----------------------------------------
+
+    $WindowEventsBase = @(
+        $Timeline |
+            Where-Object {
+
+                $EventTime = [datetime]$_.OccurrenceTime
+
+                $EventTime -ge $WindowStart -and
+                $EventTime -le $WindowEnd
+            }
+    )
+
+
+    # -----------------------------------------
+    # Count recurrence inside incident window
+    # -----------------------------------------
+
+    $IncidentOccurrenceCounts = @{}
+
+
+    $WindowEventsBase |
+        Group-Object EventSignature |
+        ForEach-Object {
+
+            $IncidentOccurrenceCounts[
+                $_.Name
+            ] = $_.Count
+        }
+
+
+    # -----------------------------------------
+    # Enrich incident events
+    # -----------------------------------------
+
+    $WindowEvents = $WindowEventsBase |
+        ForEach-Object {
+
+            $EventTime = [datetime]$_.OccurrenceTime
+
+            $MinutesFromIncident = [math]::Round(
+                ($EventTime - $AnchorTime).TotalMinutes,
+                2
+            )
+
+
+            if ($_.RecordId -eq $Anchor.RecordId) {
+
+                $IncidentPhase = "INCIDENT"
+                $Position      = "ANCHOR"
+
+            }
+            elseif ($EventTime -lt $AnchorTime) {
+
+                $IncidentPhase = "PRE_INCIDENT"
+                $Position      = "BEFORE"
+
+            }
+            else {
+
+                $IncidentPhase = "POST_INCIDENT"
+                $Position      = "AFTER"
+            }
+
+
+            $LifecycleContext = Get-HalonLifecycleContext `
+                -Event $_
+
+
+            [PSCustomObject]@{
+
+                OccurrenceTime = $_.OccurrenceTime
+                LoggedTime     = $_.LoggedTime
+
+                MinutesFromIncident = $MinutesFromIncident
+
+                IncidentPhase = $IncidentPhase
+                Position      = $Position
+
+                Category      = $_.Category
+
+                Level         = $_.Level
+                SeverityScore = $_.SeverityScore
+
+                EventID       = $_.EventID
+                Provider      = $_.Provider
+
+                LifecycleContext = $LifecycleContext
+
+                EventSignature = $_.EventSignature
+
+                OccurrencesInCollection = `
+                    $_.OccurrencesInCollection
+
+                OccurrencesInIncidentWindow = `
+                    $IncidentOccurrenceCounts[
+                        $_.EventSignature
+                    ]
+
+                AnchorType = $_.AnchorType
+                Message    = $_.Message
+                BootSessionId = $_.BootSessionId
+                BootSessionActive = $_.BootSessionActive
+                SecondsSincePreviousEvent = $_.SecondsSincePreviousEvent
+            }
+        }
+
+
+    # -----------------------------------------
+    # Create incident object
+    # -----------------------------------------
+
+    $IncidentWindows += [PSCustomObject]@{
+
+        IncidentType = "UnexpectedShutdown"
+
+        AnchorTime  = $AnchorTime
+        WindowStart = $WindowStart
+        WindowEnd   = $WindowEnd
+
+        EventCount = @(
+            $WindowEvents
+        ).Count
+
+        Events = @(
+            $WindowEvents
+        )
+    }
+}
 
 
 # ---------------------------------------------
 # INCIDENT JSON EXPORT
 # ---------------------------------------------
 
-$IncidentExport = @(
-    ConvertTo-HalonIncidentExport `
-        -IncidentWindows $IncidentWindows
-)
+$IncidentExport = $IncidentWindows |
+    ForEach-Object {
+
+        $Incident = $_
+
+
+        $ExportEvents = $Incident.Events |
+            ForEach-Object {
+
+                [PSCustomObject]@{
+
+                    OccurrenceTime = (
+                        [datetime]$_.OccurrenceTime
+                    ).ToString(
+                        "MM/dd/yyyy HH:mm:ss"
+                    )
+
+                    LoggedTime = (
+                        [datetime]$_.LoggedTime
+                    ).ToString(
+                        "MM/dd/yyyy HH:mm:ss"
+                    )
+
+                    MinutesFromIncident = `
+                        $_.MinutesFromIncident
+
+                    IncidentPhase = `
+                        $_.IncidentPhase
+
+                    Position = `
+                        $_.Position
+
+                    Category = `
+                        $_.Category
+
+                    Level = `
+                        $_.Level
+
+                    SeverityScore = `
+                        $_.SeverityScore
+
+                    EventID = `
+                        $_.EventID
+
+                    Provider = `
+                        $_.Provider
+
+                    LifecycleContext = `
+                        $_.LifecycleContext
+
+                    EventSignature = `
+                        $_.EventSignature
+
+                    OccurrencesInCollection = `
+                        $_.OccurrencesInCollection
+
+                    OccurrencesInIncidentWindow = `
+                        $_.OccurrencesInIncidentWindow
+
+                    AnchorType = `
+                        $_.AnchorType
+
+                    Message = `
+                        $_.Message
+                }
+            }
+
+
+        [PSCustomObject]@{
+
+            IncidentType = `
+                $Incident.IncidentType
+
+            AnchorTime = (
+                [datetime]$Incident.AnchorTime
+            ).ToString(
+                "MM/dd/yyyy HH:mm:ss"
+            )
+
+            WindowStart = (
+                [datetime]$Incident.WindowStart
+            ).ToString(
+                "MM/dd/yyyy HH:mm:ss"
+            )
+
+            WindowEnd = (
+                [datetime]$Incident.WindowEnd
+            ).ToString(
+                "MM/dd/yyyy HH:mm:ss"
+            )
+
+            EventCount = `
+                $Incident.EventCount
+
+            Events = @(
+                $ExportEvents
+            )
+        }
+    }
+
 
 Write-HalonJsonArray `
     -InputObject $IncidentExport `
@@ -729,10 +2424,22 @@ Write-HalonJsonArray `
 # EVENT PATTERN SUMMARY
 # ---------------------------------------------
 
-$EventSummary = @(
-    Get-HalonEventSummary `
-        -Events $Events
-)
+Write-Host "Grouping recurring events..."
+
+$EventSummary = $Events |
+    Group-Object Provider, EventID, Level |
+    Sort-Object Count -Descending |
+    ForEach-Object {
+
+        [PSCustomObject]@{
+
+            Count    = $_.Count
+            Provider = $_.Group[0].Provider
+            EventID  = $_.Group[0].EventID
+            Level    = $_.Group[0].Level
+        }
+    }
+
 
 Write-HalonJsonArray `
     -InputObject $EventSummary `
@@ -744,17 +2451,32 @@ Write-HalonJsonArray `
 # RUN MANIFEST
 # ---------------------------------------------
 
-$Manifest = `
-    New-HalonRunManifest `
-        -ComputerName $ComputerName `
-        -CollectionStart $StartTime `
-        -OutputDirectory $RunDirectory `
-        -Events $Events `
-        -IdentityCollection $IdentityCollection `
-        -WindowsSessionCollection $WindowsSessionCollection `
-        -ProcessAuditCapability $ProcessAuditCapability `
-        -ProcessCollection $ProcessCollection `
-        -ProcessCreationEvents $ProcessCreationEvents
+$Manifest = [PSCustomObject]@{
+
+    Tool             = "HALON"
+    Version          = "0.1"
+    ComputerName     = $ComputerName
+    CollectionStart  = $StartTime
+    CollectionEnd    = Get-Date
+    EventsCollected  = $Events.Count
+    OutputDirectory  = $RunDirectory
+    TimeZone = (Get-TimeZone).Id
+    IdentityCollectionStatus = $IdentityCollectionStatus
+    IdentityCollectionError  = $IdentityCollectionError
+    WindowsSessionCollectionStatus = `
+        $WindowsSessionCollectionStatus
+    WindowsSessionCollectionError = `
+        $WindowsSessionCollectionError
+    ProcessCreationAuditPolicy = `
+        $ProcessCreationAuditPolicy
+    ProcessCreationAuditEnabled = `
+        $ProcessCreationAuditEnabled
+    ProcessCreationEvidenceStatus = `
+        $ProcessCreationEvidenceStatus
+    ProcessCreationEventsCollected = @(
+        $ProcessCreationEventsRaw
+    ).Count
+}
 
 
 $Manifest |
@@ -781,3 +2503,141 @@ Write-Host "Events collected: $($Events.Count)"
 Write-Host "Evidence directory:"
 Write-Host $RunDirectory
 Write-Host ""
+
+# ---------------------------------------------
+# EVIDENCE PACKAGING / KNOWLEDGE INGESTION
+#
+# PoC pipeline handoff:
+#   HALON.ps1
+#       -> exact RunDirectory
+#   HALON.py
+#       -> exact PayloadPath
+#   Halon.KnowledgeEngine.py
+#       -> local LanceDB
+#
+# No folder discovery is performed. Each stage receives the
+# exact path produced by the previous stage.
+# ---------------------------------------------
+
+$Python = Join-Path `
+    $HalonRoot `
+    ".venv\Scripts\python.exe"
+
+$EvidencePackager = Join-Path `
+    $PSScriptRoot `
+    "HALON.py"
+
+$KnowledgeEngine = Join-Path `
+    $PSScriptRoot `
+    "knowledge\Halon.KnowledgeEngine.py"
+
+$PayloadPath = Join-Path `
+    $RunDirectory `
+    "evidence-payload-v1.json"
+
+
+if (-not (Test-Path $Python)) {
+
+    throw (
+        "HALON Python environment not found: " +
+        $Python
+    )
+}
+
+
+if (-not (Test-Path $EvidencePackager)) {
+
+    throw (
+        "HALON Evidence Packager not found: " +
+        $EvidencePackager
+    )
+}
+
+
+if (-not (Test-Path $KnowledgeEngine)) {
+
+    throw (
+        "HALON Knowledge Engine not found: " +
+        $KnowledgeEngine
+    )
+}
+
+
+Write-Host ""
+Write-Host "======================================="
+Write-Host " HALON EVIDENCE PACKAGING"
+Write-Host "======================================="
+Write-Host ""
+Write-Host "Run directory:"
+Write-Host $RunDirectory
+Write-Host ""
+
+
+& $Python `
+    $EvidencePackager `
+    --run-dir $RunDirectory `
+    --output $PayloadPath
+
+
+if ($LASTEXITCODE -ne 0) {
+
+    throw (
+        "HALON Evidence Packager failed with exit code " +
+        $LASTEXITCODE
+    )
+}
+
+
+if (-not (Test-Path $PayloadPath)) {
+
+    throw (
+        "HALON Evidence Packager completed but the expected " +
+        "payload was not found: " +
+        $PayloadPath
+    )
+}
+
+
+Write-Host ""
+Write-Host "======================================="
+Write-Host " HALON KNOWLEDGE INGESTION"
+Write-Host "======================================="
+Write-Host ""
+Write-Host "Payload:"
+Write-Host $PayloadPath
+Write-Host ""
+
+
+& $Python `
+    $KnowledgeEngine `
+    --payload $PayloadPath `
+    --rebuild `
+    --family evidenceSummary `
+    --query "What evidence categories did HALON collect?" `
+    --per-family-limit 3
+
+
+if ($LASTEXITCODE -ne 0) {
+
+    throw (
+        "HALON Knowledge Engine ingestion failed with exit code " +
+        $LASTEXITCODE
+    )
+}
+
+
+Write-Host ""
+Write-Host "======================================="
+Write-Host " HALON PIPELINE COMPLETE"
+Write-Host "======================================="
+Write-Host ""
+Write-Host "Run directory:"
+Write-Host $RunDirectory
+Write-Host ""
+Write-Host "Evidence payload:"
+Write-Host $PayloadPath
+Write-Host ""
+Write-Host "Knowledge database:"
+Write-Host (Join-Path $HalonRoot "data\knowledge")
+Write-Host ""
+
